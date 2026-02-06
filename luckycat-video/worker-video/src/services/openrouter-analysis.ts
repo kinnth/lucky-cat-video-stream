@@ -63,10 +63,10 @@ Output JSON with these exact fields:
 
 Be accurate and descriptive. Focus on what's actually visible in the frames.`
 
-    const userPrompt = `Analyze these ${request.thumbnailUrls.length} keyframes from a video${request.duration ? ` (duration: ${request.duration}s)` : ''}.
-${request.captions ? `\nAvailable captions/transcript:\n${request.captions}` : ''}
+    const userPrompt = `Can you please look at these ${request.thumbnailUrls.length} pictures and then describe what this video is about? It is ${request.duration ? Math.round(request.duration) : 'unknown'} number of seconds, and this is the captions from that video in CSV format (Start,End,Text):
+${request.captions ? `\n${request.captions}` : '(No captions available)'}
 
-Provide the metadata JSON.`
+Please provide your analysis in the metadata JSON format requested. Be extremely detailed and use lots of relevant keywords in the description.`
 
     const messages = [
         { role: 'system', content: systemPrompt },

@@ -3,6 +3,7 @@ import { cors } from 'hono/cors'
 import { nakamaAuth, getUser } from './middleware/nakama-auth'
 import { generateSignedUrl } from './services/stream-signed-url'
 import { analyzeVideo, generateThumbnailUrls } from './services/openrouter-analysis'
+import { parseVTT } from './utils/vtt-parser'
 
 type Bindings = {
     NAKAMA_URL: string
@@ -403,7 +404,7 @@ app.post('/upload/url', async (c) => {
                     ...body.meta,
                     source: 'dailymotion-migration'
                 },
-                requireSignedURLs: true
+                requireSignedURLs: false
             })
         })
 
@@ -580,17 +581,6 @@ app.post('/analyze/:uid', async (c) => {
             console.warn(`[ANALYZE] Could not fetch video info, using default keyframe times`)
         }
 
-        // Generate thumbnail URLs for the video based on duration
-        const thumbnailUrls = generateThumbnailUrls(
-            uid,
-            c.env.CLOUDFLARE_ACCOUNT_ID,
-            8,
-            duration
-        )
-
-        console.log(`[ANALYZE] Analyzing video ${uid} with ${thumbnailUrls.length} keyframes`)
-        console.log(`[ANALYZE] Keyframe URLs:`, thumbnailUrls.map(u => u.split('?')[1]))
-
         // Fetch captions (English) to include in analysis
         let captionsText: string | undefined
         try {
@@ -607,14 +597,27 @@ app.post('/analyze/:uid', async (c) => {
             )
 
             if (vttResponse.ok) {
-                captionsText = await vttResponse.text()
-                console.log(`[ANALYZE] Captions fetched, length: ${captionsText.length}`)
+                const rawVtt = await vttResponse.text()
+                const parsed = parseVTT(rawVtt)
+                captionsText = parsed.csvText
+                console.log(`[ANALYZE] Captions parsed to CSV, length: ${captionsText.length}`)
             } else {
                 console.warn(`[ANALYZE] No captions found or fetch failed: ${vttResponse.status}`)
             }
         } catch (e) {
             console.warn(`[ANALYZE] Error fetching captions:`, e)
         }
+
+        // Generate thumbnail URLs for the video based on duration
+        const thumbnailUrls = generateThumbnailUrls(
+            uid,
+            c.env.CLOUDFLARE_ACCOUNT_ID,
+            8,
+            duration
+        )
+
+        console.log(`[ANALYZE] Analyzing video ${uid} with ${thumbnailUrls.length} keyframes`)
+        console.log(`[ANALYZE] Keyframe URLs:`, thumbnailUrls.map(u => u.split('?')[1]))
 
         // Call OpenRouter for analysis
         const analysis = await analyzeVideo(
@@ -703,8 +706,15 @@ app.get('/captions/:uid', async (c) => {
             return c.json({ error: 'Failed to fetch captions', status: response.status }, 502)
         }
 
-        const vttText = await response.text()
-        return c.text(vttText)
+        const rawVtt = await response.text()
+        const parsed = parseVTT(rawVtt)
+
+        // Return structured data for client display
+        return c.json({
+            vtt: rawVtt,
+            plainText: parsed.plainText,
+            csv: parsed.csvText
+        })
 
     } catch (error) {
         return c.json({ error: 'Internal server error fetching captions' }, 500)
