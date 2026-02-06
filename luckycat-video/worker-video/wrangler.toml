@@ -1,0 +1,11 @@
+name = "luckycat-video"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+route = { pattern = "video.luckycat.me/*", zone_name = "luckycat.me" }
+
+[vars]
+NAKAMA_URL = "https://devel.luckycat.me"
+LUCKYCAT_API_URL = "https://api-devel.luckycat.me"
+
+# Cloudflare Stream Account ID (replace with real value)
+CLOUDFLARE_ACCOUNT_ID = ""
