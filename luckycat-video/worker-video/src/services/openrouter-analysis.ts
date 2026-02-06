@@ -99,7 +99,7 @@ Provide the metadata JSON.`
     if (!response.ok) {
         const errorText = await response.text()
         console.error('OpenRouter API error:', errorText)
-        throw new Error(`OpenRouter API failed: ${response.status}`)
+        throw new Error(`OpenRouter API failed (400): ${errorText}`)
     }
 
     const data = await response.json() as {
@@ -142,7 +142,7 @@ export function generateThumbnailUrls(
     count: number = 8,
     duration?: number
 ): string[] {
-    const baseUrl = `https://customer-${accountId}.cloudflarestream.com/${streamUid}/thumbnails/thumbnail.jpg`
+    const baseUrl = `https://videodelivery.net/${streamUid}/thumbnails/thumbnail.jpg`
 
     let times: number[]
 
