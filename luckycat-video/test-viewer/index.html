@@ -116,11 +116,18 @@
             </div>
         </div>
 
-        <!-- Panel 5: Readable VTT -->
+        <!-- Panel 5: VTT File Link -->
         <div class="panel">
-            <h2>5. Readable Captions</h2>
-            <textarea id="captionsContent" class="caption-text" readonly
-                placeholder="Parsed VTT text will appear here..."></textarea>
+            <h2>5. VTT Captions File</h2>
+            <div id="vttLinkSection" style="padding: 10px;">
+                <p style="color: #888; font-size: 0.85rem; margin-bottom: 10px;">
+                    Cloudflare generates a VTT caption file for each video. The link will appear below once processing
+                    is complete.
+                </p>
+                <div id="vttLinkContainer">
+                    <span style="color: #555;">(Waiting for video processing...)</span>
+                </div>
+            </div>
         </div>
 
         <!-- Panel 6: CSV Input -->
@@ -357,8 +364,8 @@
             document.getElementById('progressFill').style.width = '0%';
 
             // Captions
-            // Hide section or clear boxes
-            document.getElementById('captionsContent').value = '';
+            // Reset VTT link and CSV content
+            document.getElementById('vttLinkContainer').innerHTML = '<span style="color: #555;">(Waiting for video processing...)</span>';
             document.getElementById('csvContent').value = '';
 
             // Keyframes
@@ -606,26 +613,56 @@
             document.getElementById('videoDuration').textContent = `${data.duration?.toFixed(1)}s`;
             document.getElementById('videoDimensions').textContent = data.dimensions;
 
-            // 1. Captions
+            // 1. Captions - Show VTT link and CSV content
             const captions = data.captions || [];
             const anyReadyCaption = captions.find(c => c.status === 'ready');
 
+            // Use worker proxy endpoint for VTT access (direct Cloudflare URLs require API auth)
+            const vttProxyUrl = `${WORKER_URL}/captions/${uid}`;
+            const vttLinkContainer = document.getElementById('vttLinkContainer');
+
             if (anyReadyCaption) {
                 log(`   ✅ Captions detected: ${anyReadyCaption.label}`, 'success');
-                fetchWithRetry(`${WORKER_URL}/captions/${uid}`)
+
+                // Fetch captions and validate availability
+                fetchWithRetry(vttProxyUrl)
                     .then(r => r.json())
                     .then(d => {
-                        document.getElementById('captionsSection').style.display = 'block';
-                        document.getElementById('captionsContent').value = d.plainText || d.vtt;
-                        const csvBox = document.getElementById('csvContent');
-                        if (csvBox) csvBox.value = d.csv || '(No CSV generated)';
-                        log(`   📄 Captions loaded`, 'success');
+                        if (d.vtt && d.vtt.length > 10) {
+                            // VTT is available - show link and CSV
+                            vttLinkContainer.innerHTML = `
+                                <span style="color: #10b981; margin-bottom: 10px; display: block;">✅ VTT Ready</span>
+                                <a href="${vttProxyUrl}" target="_blank" class="link-cyan" style="display: inline-block; margin-bottom: 5px;">
+                                    📄 View VTT via Worker API 🔗
+                                </a>
+                                <br>
+                                <span style="color: #666; font-size: 0.75rem;">
+                                    Segments: ${d.vtt.split('-->').length - 1 || 'Unknown'}
+                                </span>
+                            `;
+
+                            const csvBox = document.getElementById('csvContent');
+                            if (csvBox) {
+                                csvBox.value = d.csv || '(No text in captions - video may have no speech)';
+                            }
+                            log(`   📄 Captions loaded`, 'success');
+                        } else {
+                            // VTT exists but empty
+                            vttLinkContainer.innerHTML = `
+                                <span style="color: #f59e0b;">⚠️ VTT exists but contains no speech</span>
+                            `;
+                            document.getElementById('csvContent').value = '(Video has no detected speech)';
+                        }
                     })
-                    .catch(e => log(`   ⚠️ Failed to load captions: ${e.message}`, 'warn'));
+                    .catch(e => {
+                        log(`   ⚠️ Failed to load captions: ${e.message}`, 'warn');
+                        vttLinkContainer.innerHTML = `
+                            <span style="color: #ef4444;">❌ Failed to load VTT</span>
+                        `;
+                    });
             } else {
                 log(`   ⚠️ Captions not ready yet.`, 'warn');
-                document.getElementById('captionsContent').value = '(No captions found or generated yet)';
-                document.getElementById('csvContent').value = '(No CSV data available)';
+                document.getElementById('csvContent').value = '(Captions still generating - check VTT link later)';
 
                 // Trigger caption generation
                 log(`   → Triggering caption generation...`, 'info');
@@ -748,11 +785,23 @@
                         if (d.vtt && d.vtt.length > 10) { // Check for minimal length > header
                             clearInterval(interval);
 
-                            document.getElementById('captionsSection').style.display = 'block';
-                            document.getElementById('captionsContent').value = d.plainText || d.vtt;
+                            // Update VTT link status
+                            const vttLinkContainer = document.getElementById('vttLinkContainer');
+                            const vttProxyUrl = `${WORKER_URL}/captions/${uid}`;
+                            vttLinkContainer.innerHTML = `
+                                <span style="color: #10b981; margin-bottom: 10px; display: block;">✅ VTT Ready</span>
+                                <a href="${vttProxyUrl}" target="_blank" class="link-cyan" style="display: inline-block; margin-bottom: 5px;">
+                                    📄 View VTT via Worker API 🔗
+                                </a>
+                                <br>
+                                <span style="color: #666; font-size: 0.75rem;">
+                                    Segments: ${d.vtt.split('-->').length - 1 || 'Unknown'}
+                                </span>
+                            `;
 
+                            // Update CSV content
                             const csvBox = document.getElementById('csvContent');
-                            if (csvBox) csvBox.value = d.csv || '(No CSV generated)';
+                            if (csvBox) csvBox.value = d.csv || '(No text in captions - video may have no speech)';
 
                             log(`   📄 Captions available! (${d.vtt.length} chars)`, 'success');
                             updateStatus('Captions Found', 'success');

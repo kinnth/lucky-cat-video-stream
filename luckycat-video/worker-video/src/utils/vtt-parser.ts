@@ -38,15 +38,25 @@ export function parseVTT(vttText: string): { segments: CaptionSegment[], plainTe
     // Create a plain text version for humans/AI
     const plainText = segments.map(s => `[${s.start}] ${s.text}`).join('\n')
 
-    // Create CSV version (Start,End,Text)
-    const csvHeader = 'Start,End,Text\n'
+    // Create CSV version with title header
+    // Format: "Audio Captions and Timestamps Reference for Video"
+    // Each line: Start, End, "Text"
+    const csvTitle = 'Audio Captions and Timestamps Reference for Video\n'
+    const csvHeader = 'Start Time, End Time, Caption Text\n'
     const csvRows = segments.map(s => {
         // Escape quotes by doubling them
         const text = s.text.replace(/"/g, '""')
-        return `"${s.start}","${s.end}","${text}"`
+        return `${s.start}, ${s.end}, "${text}"`
     }).join('\n')
 
-    const csvText = csvHeader + csvRows
+    // Add video duration info if we can calculate it
+    let durationNote = ''
+    if (segments.length > 0) {
+        const lastSegment = segments[segments.length - 1]
+        durationNote = `\n\n--- Total segments: ${segments.length}, Last timestamp: ${lastSegment.end} ---`
+    }
+
+    const csvText = csvTitle + csvHeader + csvRows + durationNote
 
     return { segments, plainText, csvText }
 }
