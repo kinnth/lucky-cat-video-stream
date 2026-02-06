@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { nakamaAuth, getUser } from './middleware/nakama-auth'
+import { generateSignedUrl } from './services/stream-signed-url'
 
 type Bindings = {
     NAKAMA_URL: string
@@ -61,16 +62,38 @@ app.post('/videos/:id/token', async (c) => {
     const videoId = c.req.param('id')
     const user = getUser(c)
 
-    // TODO: Validate user owns video
-    // TODO: Generate signed URL
+    // Check if signing key is configured
+    if (!c.env.CLOUDFLARE_STREAM_SIGNING_KEY_ID || !c.env.CLOUDFLARE_STREAM_SIGNING_KEY_PEM) {
+        return c.json({
+            error: 'Signing keys not configured',
+            message: 'Please set CLOUDFLARE_STREAM_SIGNING_KEY_ID and CLOUDFLARE_STREAM_SIGNING_KEY_PEM secrets'
+        }, 500)
+    }
 
-    return c.json({
-        video_id: videoId,
-        user_id: user.user_id,
-        playback_url: null,
-        expires_at: null,
-        message: 'Signed URL endpoint - implementation pending (Phase 2)'
-    })
+    // TODO: Validate user has access to this video via Lucky Cat API
+
+    try {
+        const signedUrl = await generateSignedUrl(
+            { videoId, expiresInSeconds: 7200 },
+            {
+                CLOUDFLARE_STREAM_SIGNING_KEY_ID: c.env.CLOUDFLARE_STREAM_SIGNING_KEY_ID,
+                CLOUDFLARE_STREAM_SIGNING_KEY_PEM: c.env.CLOUDFLARE_STREAM_SIGNING_KEY_PEM,
+                CLOUDFLARE_ACCOUNT_ID: c.env.CLOUDFLARE_ACCOUNT_ID,
+            }
+        )
+
+        return c.json({
+            video_id: videoId,
+            user_id: user.user_id,
+            ...signedUrl
+        })
+    } catch (error) {
+        console.error('Signed URL generation error:', error)
+        return c.json({
+            error: 'Failed to generate signed URL',
+            details: error instanceof Error ? error.message : 'Unknown error'
+        }, 500)
+    }
 })
 
 // Admin: Ingest video from URL (for migration)
