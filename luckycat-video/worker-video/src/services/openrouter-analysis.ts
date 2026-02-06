@@ -142,7 +142,8 @@ export function generateThumbnailUrls(
     count: number = 8,
     duration?: number
 ): string[] {
-    const baseUrl = `https://videodelivery.net/${streamUid}/thumbnails/thumbnail.jpg`
+    // Use customer specific domain to ensure access (OpenRouter/Gemini sometimes struggles with videodelivery.net redirects)
+    const baseUrl = `https://customer-${accountId}.cloudflarestream.com/${streamUid}/thumbnails/thumbnail.jpg`
 
     let times: number[]
 
