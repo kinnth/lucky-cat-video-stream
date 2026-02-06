@@ -116,14 +116,38 @@ Provide the metadata JSON.`
 
 /**
  * Generate thumbnail URLs for a Cloudflare Stream video
+ * Times are calculated based on video duration for even distribution
  */
 export function generateThumbnailUrls(
     streamUid: string,
     accountId: string,
-    count: number = 8
+    count: number = 8,
+    duration?: number
 ): string[] {
-    const times = [1, 5, 10, 20, 30, 45, 60, 90]
     const baseUrl = `https://customer-${accountId}.cloudflarestream.com/${streamUid}/thumbnails/thumbnail.jpg`
 
-    return times.slice(0, count).map(t => `${baseUrl}?time=${t}s&width=640`)
+    let times: number[]
+
+    if (!duration || duration <= 0) {
+        // Fallback to default times if no duration
+        times = [1, 5, 10, 20, 30, 45, 60, 90].slice(0, count)
+    } else if (duration <= 10) {
+        // Very short video: spread evenly with smaller intervals
+        times = Array.from({ length: count }, (_, i) =>
+            Math.max(0.1, Number((duration * i / (count - 1)).toFixed(1)))
+        )
+    } else if (duration <= 60) {
+        // Short video (under 1 min): evenly distributed
+        times = Array.from({ length: count }, (_, i) =>
+            Math.round(duration * i / (count - 1))
+        )
+    } else {
+        // Longer video: use percentage-based distribution
+        const percentages = [0.02, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95]
+        times = percentages.slice(0, count).map(p => Math.round(duration * p))
+    }
+
+    console.log(`[KEYFRAMES] Generated times for ${duration}s video:`, times)
+
+    return times.map(t => `${baseUrl}?time=${t}s&width=640`)
 }

@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LuckyCat Video Processing Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -435,6 +436,11 @@
                 <div class="video-container">
                     <video id="player" controls></video>
                 </div>
+                <!-- Processed video will be inserted here -->
+                <div id="processedVideoSection"
+                    style="display: none; margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.2);">
+                </div>
+
                 <div class="source-urls">
                     <div class="metadata-label">Source URLs</div>
                     <div id="sourceUrls">-</div>
@@ -520,6 +526,7 @@
         let currentVideoData = null;
         let currentStreamUid = null;
         let statusPollInterval = null;
+        let currentVideoDuration = null;
 
         function log(msg, type = 'default') {
             const logEl = document.getElementById('log');
@@ -561,10 +568,26 @@
             btn.disabled = true;
             btn.textContent = '⏳ Loading...';
             setStep(1);
-            log(`📥 [STEP 1] Fetching playback URLs from LuckyCat API...`, 'info');
-            log(`   → API: ${LUCKYCAT_API}/video/playback_source_by_dm_id/${selectedDmId}`, 'info');
 
             try {
+                // Step 1a: Get video metadata from DailyMotion (for accurate duration)
+                log(`📥 [STEP 1a] Fetching DailyMotion metadata...`, 'info');
+                const dmResponse = await fetch(`${WORKER_URL}/dm/${selectedDmId}`);
+
+                if (dmResponse.ok) {
+                    const dmData = await dmResponse.json();
+                    currentVideoDuration = dmData.duration;
+                    log(`   → DM Title: "${dmData.title}"`, 'info');
+                    log(`   → DM Duration: ${dmData.duration}s`, 'success');
+                    document.getElementById('videoDuration').textContent = `${dmData.duration}s`;
+                } else {
+                    log(`   → Could not fetch DM metadata, will use video element`, 'warn');
+                }
+
+                // Step 1b: Get playback URLs from LuckyCat API
+                log(`📥 [STEP 1b] Fetching playback URLs from LuckyCat API...`, 'info');
+                log(`   → API: ${LUCKYCAT_API}/video/playback_source_by_dm_id/${selectedDmId}`, 'info');
+
                 const response = await fetch(`${LUCKYCAT_API}/video/playback_source_by_dm_id/${selectedDmId}`);
 
                 if (!response.ok) {
@@ -581,26 +604,36 @@
 
                 // Set video source (prefer 720p MP4)
                 const mp4Source = data.mp4?.find(m => m.quality === '720p') || data.mp4?.[0];
-                if (mp4Source) {
-                    document.getElementById('player').src = mp4Source.url;
-                    log(`   → Loaded ${mp4Source.quality} MP4 (expires: ${new Date(mp4Source.expires_at).toLocaleTimeString()})`, 'success');
-                }
+                const player = document.getElementById('player');
 
-                // Show source URLs
-                document.getElementById('sourceUrls').innerHTML = `
+                if (mp4Source) {
+                    player.src = mp4Source.url;
+                    log(`   → Loaded ${mp4Source.quality} MP4 (expires: ${new Date(mp4Source.expires_at).toLocaleTimeString()})`, 'success');
+
+                    // Wait for video metadata to get actual duration
+                    player.onloadedmetadata = function () {
+                        const duration = player.duration;
+                        currentVideoDuration = duration;
+                        log(`   → Video duration: ${duration.toFixed(1)}s`, 'info');
+                        document.getElementById('videoDuration').textContent = `${duration.toFixed(1)}s`;
+                    };
+
+                    // Show source URLs
+                    document.getElementById('sourceUrls').innerHTML = `
                     <strong>MP4:</strong> ${data.mp4?.map(m => m.quality).join(', ') || 'N/A'}<br>
                     <strong>HLS:</strong> ${data.hls ? '✅' : '❌'}
                 `;
 
-                // Generate keyframes
-                generateKeyframes(selectedDmId);
+                    // Clear keyframes initially
+                    document.getElementById('keyframes').innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: #888; padding: 20px;">Keyframes will appear after Cloudflare processing</div>';
 
-                document.getElementById('uploadBtn').disabled = false;
-                document.getElementById('status').textContent = 'Loaded';
-                document.getElementById('status').className = 'status ready';
-                log(`✅ [STEP 1 COMPLETE] Video loaded from DailyMotion`, 'success');
-                setStep(2);
+                    document.getElementById('uploadBtn').disabled = false;
+                    document.getElementById('status').textContent = 'Loaded';
+                    document.getElementById('status').className = 'status ready';
+                    log(`✅ [STEP 1 COMPLETE] Video loaded from DailyMotion`, 'success');
+                    setStep(2);
 
+                }
             } catch (error) {
                 log(`❌ [STEP 1 FAILED] ${error.message}`, 'error');
             } finally {
@@ -625,22 +658,23 @@
                 return;
             }
 
-            log(`📤 [STEP 2] Uploading to Cloudflare Stream...`, 'info');
+            log(`📤 [STEP 2] Browser-based direct upload to Cloudflare Stream...`, 'info');
             log(`   → Source: ${mp4Source.quality} MP4`, 'info');
-            log(`   → Worker: ${WORKER_URL}/upload/url`, 'info');
             document.getElementById('status').textContent = 'Uploading';
             document.getElementById('status').className = 'status processing';
-            setProgress(10);
+            setProgress(5);
 
             try {
-                const response = await fetch(`${WORKER_URL}/upload/url`, {
+                // Step 2a: Get a direct upload URL from our Worker
+                log(`   → Getting direct upload URL...`, 'info');
+                const uploadUrlResponse = await fetch(`${WORKER_URL}/upload/direct`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': 'Bearer test-token'
                     },
                     body: JSON.stringify({
-                        url: mp4Source.url,
+                        maxDurationSeconds: Math.max(60, (currentVideoDuration || 60) * 2),
                         meta: {
                             dm_id: selectedDmId,
                             source: 'dailymotion',
@@ -649,26 +683,57 @@
                     })
                 });
 
-                const data = await response.json();
-
-                if (data.success) {
-                    currentStreamUid = data.uid;
-                    document.getElementById('streamUid').textContent = data.uid;
-                    log(`   → Stream UID: ${data.uid}`, 'success');
-                    log(`✅ [STEP 2 COMPLETE] Upload queued successfully`, 'success');
-
-                    // Move to step 3: wait for processing
-                    setStep(3);
-                    log(`⏳ [STEP 3] Waiting for video processing...`, 'info');
-                    startStatusPolling(data.uid);
-                } else {
-                    log(`❌ [STEP 2 FAILED] ${data.error || 'Unknown error'}`, 'error');
-                    if (data.details) log(`   → Details: ${data.details}`, 'error');
-                    document.getElementById('status').textContent = 'Error';
-                    document.getElementById('status').className = 'status error';
+                const uploadUrlData = await uploadUrlResponse.json();
+                if (!uploadUrlData.success) {
+                    throw new Error(uploadUrlData.error || 'Failed to get upload URL');
                 }
+
+                const { uid, uploadURL } = uploadUrlData;
+                log(`   → Upload URL received, UID: ${uid}`, 'success');
+                currentStreamUid = uid;
+                document.getElementById('streamUid').textContent = uid;
+                setProgress(15);
+
+                // Step 2b: Download video from DailyMotion (in browser - avoids 403)
+                log(`   → Downloading video from DailyMotion (in browser)...`, 'info');
+                const videoResponse = await fetch(mp4Source.url);
+
+                if (!videoResponse.ok) {
+                    throw new Error(`Failed to download video: ${videoResponse.status}`);
+                }
+
+                const videoBlob = await videoResponse.blob();
+                log(`   → Downloaded: ${(videoBlob.size / 1024 / 1024).toFixed(2)} MB`, 'success');
+                setProgress(50);
+
+                // Step 2c: Upload to Cloudflare Stream
+                log(`   → Uploading to Cloudflare Stream...`, 'info');
+                const formData = new FormData();
+                formData.append('file', videoBlob, `${selectedDmId}.mp4`);
+
+                const uploadResponse = await fetch(uploadURL, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!uploadResponse.ok) {
+                    const errText = await uploadResponse.text();
+                    throw new Error(`Upload failed: ${uploadResponse.status} - ${errText}`);
+                }
+
+                log(`   → Stream UID: ${uid}`, 'success');
+                log(`✅ [STEP 2 COMPLETE] Upload successful!`, 'success');
+                setProgress(80);
+
+                // Move to step 3: wait for processing
+                setStep(3);
+                log(`⏳ [STEP 3] Waiting for video processing...`, 'info');
+                startStatusPolling(uid);
+
             } catch (error) {
                 log(`❌ [STEP 2 FAILED] ${error.message}`, 'error');
+                document.getElementById('status').textContent = 'Error';
+                document.getElementById('status').className = 'status error';
             } finally {
                 btn.disabled = false;
                 btn.textContent = '🚀 Step 2: Upload to Stream';
@@ -702,6 +767,7 @@
                         data.pctComplete ? `${data.pctComplete}` : data.state;
 
                     if (data.duration) {
+                        currentVideoDuration = data.duration;
                         document.getElementById('videoDuration').textContent = `${data.duration.toFixed(1)}s`;
                     }
                     if (data.dimensions) {
@@ -735,8 +801,20 @@
                         log(`✅ [STEP 3 COMPLETE] Video is ready to stream!`, 'success');
                         log(`   → Duration: ${data.duration?.toFixed(1)}s, Dimensions: ${data.dimensions}`, 'success');
 
-                        // Update keyframes to use Stream thumbnails
-                        generateStreamKeyframes(uid);
+                        // Update keyframes to use signed Stream thumbnails
+                        if (data.signedThumbnails && data.signedThumbnails.length > 0) {
+                            log(`   → Using ${data.signedThumbnails.length} signed thumbnails`, 'success');
+                            displaySignedThumbnails(data.signedThumbnails, data.duration);
+                        } else {
+                            log(`   → No signed thumbnails, using unsigned`, 'warn');
+                            generateStreamKeyframes(uid, data.duration);
+                        }
+
+                        // Show the processed video from Cloudflare Stream
+                        if (data.signedPlaybackUrl) {
+                            log(`   → Signed playback URL available`, 'success');
+                            showProcessedVideo(data.signedPlaybackUrl, uid);
+                        }
 
                         setStep(4);
                         log(`🤖 [STEP 4] Ready for AI analysis. Click the button to proceed.`, 'info');
@@ -837,7 +915,8 @@
 
         function generateKeyframes(dmId) {
             const container = document.getElementById('keyframes');
-            const times = [0, 10, 20, 30, 45, 60, 90, 120];
+            // Use placeholder times initially (will be updated when video loads)
+            const times = [0, 1, 2, 3, 4, 5, 6, 7];
 
             container.innerHTML = times.map((t, i) => `
                 <div class="keyframe">
@@ -847,12 +926,68 @@
                     <span class="keyframe-time">${t}s</span>
                 </div>
             `).join('');
-            log(`   → Generated ${times.length} DailyMotion preview keyframes`, 'info');
+            log(`   → Generated ${times.length} initial keyframes (awaiting duration)`, 'info');
         }
 
-        function generateStreamKeyframes(uid) {
+        function generateKeyframesWithDuration(dmId, duration) {
             const container = document.getElementById('keyframes');
-            const times = [1, 5, 10, 20, 30, 45, 60, 90];
+            const numFrames = 8;
+            let times = [];
+
+            if (duration <= 10) {
+                // Short video: spread evenly
+                for (let i = 0; i < numFrames; i++) {
+                    times.push(Number((duration * i / (numFrames - 1)).toFixed(1)));
+                }
+            } else if (duration <= 60) {
+                // Medium video: evenly distributed
+                for (let i = 0; i < numFrames; i++) {
+                    times.push(Math.round(duration * i / (numFrames - 1)));
+                }
+            } else {
+                // Longer video: percentage-based
+                const percentages = [0.02, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95];
+                times = percentages.map(p => Math.round(duration * p));
+            }
+
+            log(`   → Keyframe times for ${duration.toFixed(1)}s video: [${times.join(', ')}]`, 'info');
+
+            container.innerHTML = times.map((t, i) => `
+                <div class="keyframe">
+                    <img src="https://www.dailymotion.com/thumbnail/video/${dmId}?time=${t}" 
+                         alt="Frame ${i + 1}"
+                         onerror="this.parentElement.style.background='#3a3a5a'">
+                    <span class="keyframe-time">${t}s</span>
+                </div>
+            `).join('');
+            log(`   → Updated DailyMotion keyframes with correct timing`, 'success');
+        }
+
+        function generateStreamKeyframes(uid, duration = null) {
+            const container = document.getElementById('keyframes');
+            const numFrames = 8;
+            let times = [];
+
+            // Use actual video duration if available
+            const videoDuration = duration || currentVideoDuration || 60;
+
+            if (videoDuration <= 10) {
+                // Very short video: spread evenly with smaller intervals
+                for (let i = 0; i < numFrames; i++) {
+                    times.push(Math.max(0.1, (videoDuration * i / (numFrames - 1)).toFixed(1)));
+                }
+            } else if (videoDuration <= 60) {
+                // Short video (under 1 min): evenly distributed
+                for (let i = 0; i < numFrames; i++) {
+                    times.push(Math.round(videoDuration * i / (numFrames - 1)));
+                }
+            } else {
+                // Longer video: use percentage-based distribution
+                const percentages = [0.02, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95];
+                times = percentages.map(p => Math.round(videoDuration * p));
+            }
+
+            log(`   → Keyframe times calculated for ${videoDuration.toFixed(1)}s video: [${times.join(', ')}]`, 'info');
 
             container.innerHTML = times.map((t, i) => `
                 <div class="keyframe">
@@ -863,6 +998,84 @@
                 </div>
             `).join('');
             log(`   → Updated to Cloudflare Stream keyframes (${times.length} frames)`, 'info');
+        }
+
+        function displaySignedThumbnails(signedUrls, duration) {
+            const container = document.getElementById('keyframes');
+            const times = [];
+            const numFrames = signedUrls.length;
+
+            // Calculate times based on duration for labels
+            if (duration <= 10) {
+                for (let i = 0; i < numFrames; i++) {
+                    times.push(Number((duration * i / (numFrames - 1)).toFixed(1)));
+                }
+            } else if (duration <= 60) {
+                for (let i = 0; i < numFrames; i++) {
+                    times.push(Math.round(duration * i / (numFrames - 1)));
+                }
+            } else {
+                const percentages = [0.02, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95];
+                for (let i = 0; i < numFrames; i++) {
+                    times.push(Math.round(duration * (percentages[i] || i / numFrames)));
+                }
+            }
+
+            container.innerHTML = signedUrls.map((url, i) => `
+                <div class="keyframe">
+                    <img src="${url}" 
+                         alt="Frame ${i + 1}"
+                         onerror="this.style.opacity='0.3'">
+                    <span class="keyframe-time">${times[i]}s</span>
+                </div>
+            `).join('');
+            log(`   → Displayed ${signedUrls.length} signed Stream keyframes`, 'success');
+        }
+
+        function showProcessedVideo(hlsUrl, uid) {
+            const processedSection = document.getElementById('processedVideoSection');
+            if (!processedSection) {
+                log('❌ Could not find processedVideoSection element', 'error');
+                return;
+            }
+
+            processedSection.style.display = 'block';
+            processedSection.innerHTML = `
+                <h4 style="color: #a855f7; margin-bottom: 10px;">🎬 Processed Video (Cloudflare Stream)</h4>
+                <video id="processedPlayer" controls playsinline 
+                       style="width: 100%; border-radius: 8px; background: #1a1a2e;">
+                </video>
+                <div class="source-urls" style="margin-top: 10px; font-size: 0.75rem; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 6px;">
+                    <strong>Stream UID:</strong> ${uid}<br>
+                    <strong>HLS URL:</strong> <a href="${hlsUrl}" target="_blank" style="color: #888; text-decoration: none;">${hlsUrl.substring(0, 40)}...</a>
+                </div>
+            `;
+
+            // Load HLS video
+            const video = document.getElementById('processedPlayer');
+
+            // Check if browser supports HLS natively (Safari)
+            if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = hlsUrl;
+            } else {
+                // Use HLS.js for other browsers
+                if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+                    const hls = new Hls();
+                    hls.loadSource(hlsUrl);
+                    hls.attachMedia(video);
+                    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                        log(`   → HLS manifest loaded, ready to play`, 'success');
+                    });
+                    hls.on(Hls.Events.ERROR, (event, data) => {
+                        if (data.fatal) {
+                            log(`   → HLS error: ${data.type} - ${data.details}`, 'error');
+                        }
+                    });
+                } else {
+                    log(`   → HLS not supported, video may not play`, 'warn');
+                    video.src = hlsUrl; // Try direct anyway
+                }
+            }
         }
     </script>
 </body>

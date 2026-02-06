@@ -7,6 +7,8 @@ interface SignedTokenOptions {
     videoId: string
     expiresInSeconds?: number
     downloadable?: boolean
+    thumbnailTime?: number // Time in seconds for thumbnail
+    customDomain?: string // Optional custom domain override
 }
 
 interface SignedUrlResult {
@@ -28,7 +30,7 @@ export async function generateSignedUrl(
         CLOUDFLARE_ACCOUNT_ID: string
     }
 ): Promise<SignedUrlResult> {
-    const { videoId, expiresInSeconds = 7200, downloadable = false } = options
+    const { videoId, expiresInSeconds = 7200, downloadable = false, thumbnailTime, customDomain } = options
 
     // Calculate expiration time
     const now = Math.floor(Date.now() / 1000)
@@ -57,11 +59,18 @@ export async function generateSignedUrl(
     const token = await signJwt(header, payload, env.CLOUDFLARE_STREAM_SIGNING_KEY_PEM)
 
     // Construct URLs - token replaces video ID in the URL
-    const customerSubdomain = `customer-${env.CLOUDFLARE_ACCOUNT_ID}.cloudflarestream.com`
+    // Use custom domain if provided, otherwise fallback to customer-{ACCOUNT_ID}
+    const customerSubdomain = customDomain || `customer-${env.CLOUDFLARE_ACCOUNT_ID}.cloudflarestream.com`
+
+    // Build thumbnail URL with optional time parameter
+    let thumbnailUrl = `https://${customerSubdomain}/${token}/thumbnails/thumbnail.jpg`
+    if (thumbnailTime !== undefined) {
+        thumbnailUrl += `?time=${thumbnailTime}s&width=640`
+    }
 
     return {
         playback_url: `https://${customerSubdomain}/${token}/manifest/video.m3u8`,
-        thumbnail_url: `https://${customerSubdomain}/${token}/thumbnails/thumbnail.jpg`,
+        thumbnail_url: thumbnailUrl,
         expires_at: new Date(exp * 1000).toISOString(),
         token,
     }

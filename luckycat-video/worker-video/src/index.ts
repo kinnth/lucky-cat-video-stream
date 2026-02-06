@@ -138,6 +138,7 @@ app.get('/status/:uid', async (c) => {
                 size?: number
                 input?: { width?: number; height?: number }
                 thumbnail?: string
+                playback?: { hls?: string; dash?: string }
                 created?: string
                 modified?: string
             }
@@ -146,6 +147,66 @@ app.get('/status/:uid', async (c) => {
         const video = data.result
 
         console.log(`[STATUS] Video ${uid}: state=${video.status.state}, ready=${video.readyToStream}, pct=${video.status.pctComplete || 'N/A'}`)
+
+        // Generate signed URLs if video is ready
+        let signedPlaybackUrl: string | null = null
+        let signedThumbnails: string[] = []
+
+        if (video.readyToStream && c.env.CLOUDFLARE_STREAM_SIGNING_KEY_ID && c.env.CLOUDFLARE_STREAM_SIGNING_KEY_PEM) {
+            try {
+                // Determine custom domain from playback URL if available
+                let customDomain: string | undefined
+                if (video.playback?.hls) {
+                    try {
+                        const url = new URL(video.playback.hls)
+                        customDomain = url.hostname
+                        console.log(`[STATUS] Determined custom domain from HLS URL: ${customDomain}`)
+                    } catch (e) {
+                        console.warn('[STATUS] Could not parse HLS URL for domain extraction', e)
+                    }
+                }
+
+                // Generate signed playback URL (1 hour expiry)
+                const playbackResult = await generateSignedUrl(
+                    { videoId: uid, customDomain },
+                    {
+                        CLOUDFLARE_STREAM_SIGNING_KEY_ID: c.env.CLOUDFLARE_STREAM_SIGNING_KEY_ID,
+                        CLOUDFLARE_STREAM_SIGNING_KEY_PEM: c.env.CLOUDFLARE_STREAM_SIGNING_KEY_PEM,
+                        CLOUDFLARE_ACCOUNT_ID: c.env.CLOUDFLARE_ACCOUNT_ID
+                    }
+                )
+                signedPlaybackUrl = playbackResult.playback_url
+
+                // Generate signed thumbnail URLs based on duration
+                const duration = video.duration || 60
+                let times: number[]
+                if (duration <= 10) {
+                    times = Array.from({ length: 8 }, (_, i) => Number((duration * i / 7).toFixed(1)))
+                } else if (duration <= 60) {
+                    times = Array.from({ length: 8 }, (_, i) => Math.round(duration * i / 7))
+                } else {
+                    times = [0.02, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95].map(p => Math.round(duration * p))
+                }
+
+                console.log(`[STATUS] Generating signed thumbnails for times:`, times)
+
+                for (const t of times) {
+                    const thumbResult = await generateSignedUrl(
+                        { videoId: uid, thumbnailTime: t, customDomain },
+                        {
+                            CLOUDFLARE_STREAM_SIGNING_KEY_ID: c.env.CLOUDFLARE_STREAM_SIGNING_KEY_ID,
+                            CLOUDFLARE_STREAM_SIGNING_KEY_PEM: c.env.CLOUDFLARE_STREAM_SIGNING_KEY_PEM,
+                            CLOUDFLARE_ACCOUNT_ID: c.env.CLOUDFLARE_ACCOUNT_ID
+                        }
+                    )
+                    signedThumbnails.push(thumbResult.thumbnail_url)
+                }
+
+                console.log(`[STATUS] Generated ${signedThumbnails.length} signed thumbnail URLs`)
+            } catch (signError) {
+                console.error('[STATUS] Failed to generate signed URLs:', signError)
+            }
+        }
 
         return c.json({
             uid: video.uid,
@@ -157,6 +218,9 @@ app.get('/status/:uid', async (c) => {
             size: video.size,
             dimensions: video.input ? `${video.input.width}x${video.input.height}` : null,
             thumbnail: video.thumbnail,
+            signedPlaybackUrl,
+            signedThumbnails,
+            iframeUrl: video.readyToStream ? `https://customer-${c.env.CLOUDFLARE_ACCOUNT_ID}.cloudflarestream.com/${uid}/iframe` : null,
             error: video.status.errorReasonCode ? {
                 code: video.status.errorReasonCode,
                 message: video.status.errorReasonText
@@ -169,6 +233,109 @@ app.get('/status/:uid', async (c) => {
         console.error('[STATUS] Error:', error)
         return c.json({
             error: 'Failed to get status',
+            details: error instanceof Error ? error.message : 'Unknown error'
+        }, 500)
+    }
+})
+
+// Get video info from DailyMotion API (including actual duration)
+app.get('/dm/:id', async (c) => {
+    const dmId = c.req.param('id')
+
+    console.log(`[DM] Fetching info for DailyMotion video ${dmId}`)
+
+    try {
+        const response = await fetch(
+            `https://api.dailymotion.com/video/${dmId}?fields=id,title,duration,thumbnail_url,owner.username,created_time`
+        )
+
+        if (!response.ok) {
+            return c.json({ error: 'Video not found on DailyMotion' }, 404)
+        }
+
+        const data = await response.json() as {
+            id: string
+            title: string
+            duration: number
+            thumbnail_url: string
+            'owner.username': string
+            created_time: number
+        }
+
+        console.log(`[DM] Video ${dmId}: duration=${data.duration}s, title="${data.title}"`)
+
+        return c.json({
+            id: data.id,
+            title: data.title,
+            duration: data.duration,
+            thumbnail: data.thumbnail_url,
+            owner: data['owner.username'],
+            created: new Date(data.created_time * 1000).toISOString()
+        })
+    } catch (error) {
+        console.error('[DM] Error:', error)
+        return c.json({ error: 'Failed to fetch DailyMotion info' }, 500)
+    }
+})
+
+// Create direct upload URL for browser-based upload (avoids 403 issues)
+app.post('/upload/direct', async (c) => {
+    const authHeader = c.req.header('Authorization')
+    if (!authHeader) {
+        return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    try {
+        const body = await c.req.json() as {
+            maxDurationSeconds?: number
+            meta?: Record<string, string>
+        }
+
+        console.log('[DIRECT] Creating direct upload URL...')
+
+        // Create a direct upload URL via Cloudflare Stream API
+        const response = await fetch(
+            `https://api.cloudflare.com/client/v4/accounts/${c.env.CLOUDFLARE_ACCOUNT_ID}/stream/direct_upload`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${c.env.CLOUDFLARE_STREAM_API_TOKEN}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    maxDurationSeconds: body.maxDurationSeconds || 3600,
+                    requireSignedURLs: true,
+                    meta: body.meta || {}
+                })
+            }
+        )
+
+        if (!response.ok) {
+            const errText = await response.text()
+            console.error('[DIRECT] API error:', errText)
+            return c.json({ error: 'Failed to create upload URL', details: errText }, 502)
+        }
+
+        const data = await response.json() as {
+            result: {
+                uid: string
+                uploadURL: string
+            }
+        }
+
+        console.log('[DIRECT] Upload URL created, UID:', data.result.uid)
+
+        return c.json({
+            success: true,
+            uid: data.result.uid,
+            uploadURL: data.result.uploadURL,
+            message: 'Use this URL for direct browser upload'
+        })
+
+    } catch (error) {
+        console.error('[DIRECT] Error:', error)
+        return c.json({
+            error: 'Failed to create direct upload URL',
             details: error instanceof Error ? error.message : 'Unknown error'
         }, 500)
     }
@@ -366,20 +533,43 @@ app.post('/analyze/:uid', async (c) => {
     }
 
     try {
-        // Generate thumbnail URLs for the video
+        // First, get the video duration from Cloudflare Stream
+        console.log(`[ANALYZE] Fetching video info for ${uid}...`)
+        const streamUrl = `https://api.cloudflare.com/client/v4/accounts/${c.env.CLOUDFLARE_ACCOUNT_ID}/stream/${uid}`
+
+        const infoResponse = await fetch(streamUrl, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${c.env.CLOUDFLARE_STREAM_API_TOKEN}`,
+            }
+        })
+
+        let duration: number | undefined
+        if (infoResponse.ok) {
+            const info = await infoResponse.json() as { result: { duration?: number } }
+            duration = info.result?.duration
+            console.log(`[ANALYZE] Video duration: ${duration}s`)
+        } else {
+            console.warn(`[ANALYZE] Could not fetch video info, using default keyframe times`)
+        }
+
+        // Generate thumbnail URLs for the video based on duration
         const thumbnailUrls = generateThumbnailUrls(
             uid,
             c.env.CLOUDFLARE_ACCOUNT_ID,
-            8
+            8,
+            duration
         )
 
-        console.log(`Analyzing video ${uid} with ${thumbnailUrls.length} keyframes`)
+        console.log(`[ANALYZE] Analyzing video ${uid} with ${thumbnailUrls.length} keyframes`)
+        console.log(`[ANALYZE] Keyframe URLs:`, thumbnailUrls.map(u => u.split('?')[1]))
 
         // Call OpenRouter for analysis
         const analysis = await analyzeVideo(
             {
                 videoId: uid,
-                thumbnailUrls
+                thumbnailUrls,
+                duration
             },
             c.env.OPENROUTER_API_KEY
         )
@@ -387,6 +577,7 @@ app.post('/analyze/:uid', async (c) => {
         return c.json({
             success: true,
             uid,
+            duration,
             analysis
         })
 
