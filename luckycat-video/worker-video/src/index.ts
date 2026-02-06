@@ -101,11 +101,8 @@ app.post('/videos/:id/token', async (c) => {
 app.get('/status/:uid', async (c) => {
     const uid = c.req.param('uid')
 
-    // Simple auth check
-    const authHeader = c.req.header('Authorization')
-    if (!authHeader) {
-        return c.json({ error: 'Unauthorized' }, 401)
-    }
+    // Auth check removed for public access
+    // if (!c.req.header('Authorization')) return c.json({ error: 'Unauthorized' }, 401)
 
     try {
         const streamUrl = `https://api.cloudflare.com/client/v4/accounts/${c.env.CLOUDFLARE_ACCOUNT_ID}/stream/${uid}`
@@ -139,73 +136,43 @@ app.get('/status/:uid', async (c) => {
                 input?: { width?: number; height?: number }
                 thumbnail?: string
                 playback?: { hls?: string; dash?: string }
+                requireSignedURLs?: boolean
                 created?: string
                 modified?: string
             }
         }
 
-        const video = data.result
+        // Safety check to handle unwrapped responses if API differs
+        const video = data.result || data // Fallback if result wrapper is missing
 
-        console.log(`[STATUS] Video ${uid}: state=${video.status.state}, ready=${video.readyToStream}, pct=${video.status.pctComplete || 'N/A'}`)
+        // PUBLIC ACCESS MODE: No signing logic.
+        // Directly map public Cloudflare Stream URLs.
+        const playbackUrl = video.playback?.hls || null;
+        const dashUrl = video.playback?.dash || null;
+        const downloadUrl = playbackUrl ? playbackUrl.replace('/manifest/video.m3u8', '/downloads/default.mp4') : null;
 
-        // Generate signed URLs if video is ready
-        let signedPlaybackUrl: string | null = null
-        let signedThumbnails: string[] = []
+        // Generate public thumbnail URL (using default Cloudflare format)
+        // https://customer-<id>.cloudflarestream.com/<uid>/thumbnails/thumbnail.jpg?time=Xs&height=600
+        const thumbnailBase = video.thumbnail ? video.thumbnail.split('?')[0] : `https://customer-${c.env.CLOUDFLARE_ACCOUNT_ID}.cloudflarestream.com/${uid}/thumbnails/thumbnail.jpg`;
 
-        if (video.readyToStream && c.env.CLOUDFLARE_STREAM_SIGNING_KEY_ID && c.env.CLOUDFLARE_STREAM_SIGNING_KEY_PEM) {
+        // Generate a few thumbnails for keyframes
+        let thumbnails: string[] = [];
+        if (video.duration) {
+            const duration = video.duration;
+            // Generate 8 evenly spaced timestamps
+            const times = Array.from({ length: 8 }, (_, i) => (duration * i / 7).toFixed(1));
+            thumbnails = times.map(t => `${thumbnailBase}?time=${t}s&height=360`);
+        } else {
+            thumbnails = [video.thumbnail || `${thumbnailBase}?height=360`];
+        }
+
+        // Use custom domain for iframe URL lookup or fallback
+        // Extract domain from playback URL if possible
+        let domain = `customer-${c.env.CLOUDFLARE_ACCOUNT_ID}.cloudflarestream.com`;
+        if (playbackUrl) {
             try {
-                // Determine custom domain from playback URL if available
-                let customDomain: string | undefined
-                if (video.playback?.hls) {
-                    try {
-                        const url = new URL(video.playback.hls)
-                        customDomain = url.hostname
-                        console.log(`[STATUS] Determined custom domain from HLS URL: ${customDomain}`)
-                    } catch (e) {
-                        console.warn('[STATUS] Could not parse HLS URL for domain extraction', e)
-                    }
-                }
-
-                // Generate signed playback URL (1 hour expiry)
-                const playbackResult = await generateSignedUrl(
-                    { videoId: uid, customDomain },
-                    {
-                        CLOUDFLARE_STREAM_SIGNING_KEY_ID: c.env.CLOUDFLARE_STREAM_SIGNING_KEY_ID,
-                        CLOUDFLARE_STREAM_SIGNING_KEY_PEM: c.env.CLOUDFLARE_STREAM_SIGNING_KEY_PEM,
-                        CLOUDFLARE_ACCOUNT_ID: c.env.CLOUDFLARE_ACCOUNT_ID
-                    }
-                )
-                signedPlaybackUrl = playbackResult.playback_url
-
-                // Generate signed thumbnail URLs based on duration
-                const duration = video.duration || 60
-                let times: number[]
-                if (duration <= 10) {
-                    times = Array.from({ length: 8 }, (_, i) => Number((duration * i / 7).toFixed(1)))
-                } else if (duration <= 60) {
-                    times = Array.from({ length: 8 }, (_, i) => Math.round(duration * i / 7))
-                } else {
-                    times = [0.02, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95].map(p => Math.round(duration * p))
-                }
-
-                console.log(`[STATUS] Generating signed thumbnails for times:`, times)
-
-                for (const t of times) {
-                    const thumbResult = await generateSignedUrl(
-                        { videoId: uid, thumbnailTime: t, customDomain },
-                        {
-                            CLOUDFLARE_STREAM_SIGNING_KEY_ID: c.env.CLOUDFLARE_STREAM_SIGNING_KEY_ID,
-                            CLOUDFLARE_STREAM_SIGNING_KEY_PEM: c.env.CLOUDFLARE_STREAM_SIGNING_KEY_PEM,
-                            CLOUDFLARE_ACCOUNT_ID: c.env.CLOUDFLARE_ACCOUNT_ID
-                        }
-                    )
-                    signedThumbnails.push(thumbResult.thumbnail_url)
-                }
-
-                console.log(`[STATUS] Generated ${signedThumbnails.length} signed thumbnail URLs`)
-            } catch (signError) {
-                console.error('[STATUS] Failed to generate signed URLs:', signError)
-            }
+                domain = new URL(playbackUrl).hostname;
+            } catch (e) { /* ignore */ }
         }
 
         return c.json({
@@ -218,9 +185,14 @@ app.get('/status/:uid', async (c) => {
             size: video.size,
             dimensions: video.input ? `${video.input.width}x${video.input.height}` : null,
             thumbnail: video.thumbnail,
-            signedPlaybackUrl,
-            signedThumbnails,
-            iframeUrl: video.readyToStream ? `https://customer-${c.env.CLOUDFLARE_ACCOUNT_ID}.cloudflarestream.com/${uid}/iframe` : null,
+
+            // Public URLs mapped to "signed" fields for compatibility with Client
+            signedPlaybackUrl: playbackUrl,
+            signedDashUrl: dashUrl,
+            signedDownloadUrl: downloadUrl,
+            signedThumbnails: thumbnails,
+
+            iframeUrl: video.readyToStream ? `https://${domain}/${video.uid}/iframe` : null,
             error: video.status.errorReasonCode ? {
                 code: video.status.errorReasonCode,
                 message: video.status.errorReasonText
@@ -235,6 +207,51 @@ app.get('/status/:uid', async (c) => {
             error: 'Failed to get status',
             details: error instanceof Error ? error.message : 'Unknown error'
         }, 500)
+    }
+})
+
+// Generate captions using Cloudflare AI
+app.post('/captions/generate/:uid', async (c) => {
+    const uid = c.req.param('uid')
+    console.log(`[CAPTIONS] Generating AI captions for ${uid}...`)
+
+    try {
+        // According to Cloudflare Docs (2024), to generate AI captions:
+        // POST accounts/{account_id}/stream/{video_id}/captions
+        // Body: { "language": "en", "generated": true }
+        // BUT calling it "PUT" with "language/en" sometimes is for uploading VTTs.
+        // Let's try the POST method with generated flag which works on newer endpoints.
+
+        const response = await fetch(
+            `https://api.cloudflare.com/client/v4/accounts/${c.env.CLOUDFLARE_ACCOUNT_ID}/stream/${uid}/captions`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${c.env.CLOUDFLARE_STREAM_API_TOKEN}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    language: 'en',
+                    label: 'English (AI)',
+                    generated: true
+                })
+            }
+        )
+
+        if (!response.ok) {
+            const err = await response.text()
+            console.error('[CAPTIONS] Generation request failed:', err)
+            // If POST fails, try the alternative PUT method for "generating" which some docs refer to as just creating a placeholder
+            // But let's return the error for debug first.
+            return c.json({ error: 'Failed to trigger caption generation', details: err }, 502)
+        }
+
+        const data = await response.json()
+        return c.json({ success: true, result: data })
+
+    } catch (error) {
+        console.error('[CAPTIONS] Error:', error)
+        return c.json({ error: 'Internal error generating captions' }, 500)
     }
 })
 
@@ -280,10 +297,7 @@ app.get('/dm/:id', async (c) => {
 
 // Create direct upload URL for browser-based upload (avoids 403 issues)
 app.post('/upload/direct', async (c) => {
-    const authHeader = c.req.header('Authorization')
-    if (!authHeader) {
-        return c.json({ error: 'Unauthorized' }, 401)
-    }
+    // Auth check removed for public access
 
     try {
         const body = await c.req.json() as {
@@ -304,7 +318,7 @@ app.post('/upload/direct', async (c) => {
                 },
                 body: JSON.stringify({
                     maxDurationSeconds: body.maxDurationSeconds || 3600,
-                    requireSignedURLs: true,
+                    requireSignedURLs: false, // PUBLIC ACCESS
                     meta: body.meta || {}
                 })
             }

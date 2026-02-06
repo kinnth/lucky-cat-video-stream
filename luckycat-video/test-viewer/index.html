@@ -670,8 +670,7 @@
                 const uploadUrlResponse = await fetch(`${WORKER_URL}/upload/direct`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': 'Bearer test-token'
+                        'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
                         maxDurationSeconds: Math.max(60, (currentVideoDuration || 60) * 2),
@@ -758,9 +757,26 @@
                     const data = await response.json();
 
                     if (data.error) {
-                        log(`   → Poll ${pollCount}: Error - ${data.error}`, 'warn');
+                        // Check if error is signing failure or critical
+                        if (data.error.code === 'SIGNING_FAILED') {
+                            log(`❌ Signing Error: ${data.error.message}`, 'error');
+                            console.error('Signing details:', data.error.details);
+                        } else {
+                            log(`   → Poll ${pollCount}: Error - ${JSON.stringify(data.error)}`, 'warn');
+                        }
+
+                        pollErrorCount++;
+                        if (pollErrorCount >= 7) {
+                            clearInterval(statusPollInterval);
+                            statusPollInterval = null;
+                            log(`❌ [FAILED] Too many polling errors (${pollErrorCount}). Stopped.`, 'error');
+                            document.getElementById('status').textContent = 'Error';
+                            document.getElementById('status').className = 'status error';
+                        }
                         return;
                     }
+                    // Reset error count on success
+                    pollErrorCount = 0;
 
                     // Update UI
                     document.getElementById('processProgress').textContent =
@@ -780,6 +796,20 @@
                         document.getElementById('status').className = 'status queued';
                         setProgress(20);
                     } else if (data.state === 'inprogress') {
+                        // Step 2d: Trigger AI Caption Generation
+                        log(`   → Triggering AI Caption Generation...`, 'info');
+                        try {
+                            const capResponse = await fetch(`${WORKER_URL}/captions/generate/${uid}`, { method: 'POST' });
+                            const capResult = await capResponse.json();
+                            if (capResult.success) {
+                                log(`   → Captions triggered successfully`, 'success');
+                            } else {
+                                log(`   ⚠️ Caption trigger warning: ${capResult.error}`, 'warn');
+                            }
+                        } catch (capErr) {
+                            log(`   ⚠️ Failed to trigger captions: ${capErr.message}`, 'warn');
+                        }
+
                         document.getElementById('status').textContent = 'Processing';
                         document.getElementById('status').className = 'status processing';
                         const pct = parseInt(data.pctComplete) || 50;
@@ -801,19 +831,31 @@
                         log(`✅ [STEP 3 COMPLETE] Video is ready to stream!`, 'success');
                         log(`   → Duration: ${data.duration?.toFixed(1)}s, Dimensions: ${data.dimensions}`, 'success');
 
+                        // DEBUG: Log full data object to console to inspect structure
+                        console.log('Video Ready Data:', data);
+
+                        // Check for signing errors returned by worker
+                        if (data.error && data.error.code === 'SIGNING_FAILED') {
+                            log(`⚠️ Signing Failed: ${data.error.message}`, 'warn');
+                            log(`   → ${data.error.details}`, 'warn');
+                        }
+
                         // Update keyframes to use signed Stream thumbnails
                         if (data.signedThumbnails && data.signedThumbnails.length > 0) {
                             log(`   → Using ${data.signedThumbnails.length} signed thumbnails`, 'success');
                             displaySignedThumbnails(data.signedThumbnails, data.duration);
                         } else {
-                            log(`   → No signed thumbnails, using unsigned`, 'warn');
+                            log(`   → No signed thumbnails available.`, 'warn');
+                            if (!data.signedThumbnails) log(`   → data.signedThumbnails is undefined/null`, 'error');
                             generateStreamKeyframes(uid, data.duration);
                         }
 
                         // Show the processed video from Cloudflare Stream
                         if (data.signedPlaybackUrl) {
-                            log(`   → Signed playback URL available`, 'success');
-                            showProcessedVideo(data.signedPlaybackUrl, uid);
+                            log(`   → Signed playback URL available, validating...`, 'info');
+                            validateAndShowVideo(data, uid);
+                        } else {
+                            log(`   → Signed playback URL missing!`, 'error');
                         }
 
                         setStep(4);
@@ -1032,7 +1074,35 @@
             log(`   → Displayed ${signedUrls.length} signed Stream keyframes`, 'success');
         }
 
-        function showProcessedVideo(hlsUrl, uid) {
+        async function validateAndShowVideo(data, uid) {
+            const hlsUrl = data.signedPlaybackUrl;
+            log(`   → Validating HLS link: ${hlsUrl}`, 'info');
+
+            try {
+                const response = await fetch(hlsUrl, { method: 'HEAD' });
+                if (response.ok) {
+                    log(`   ✅ Link Valid (200 OK)`, 'success');
+                    showProcessedVideo(data, uid, true);
+                } else {
+                    log(`   ❌ Link Invalid (${response.status} ${response.statusText})`, 'error');
+                    console.error('Invalid Link Response:', response);
+                    // Show anyway so user can debug raw link
+                    showProcessedVideo(data, uid, false);
+                }
+            } catch (e) {
+                log(`   ⚠️ Link validation failed (network error?): ${e.message}`, 'warn');
+                showProcessedVideo(data, uid, false);
+            }
+        }
+
+        function showProcessedVideo(data, uid, isValid) {
+            const hlsUrl = data.signedPlaybackUrl;
+            const dashUrl = data.signedDashUrl;
+            const downloadUrl = data.signedDownloadUrl;
+
+            // Prefer Iframe URL if available, else standard fallback
+            const iframeUrl = data.iframeUrl;
+
             const processedSection = document.getElementById('processedVideoSection');
             if (!processedSection) {
                 log('❌ Could not find processedVideoSection element', 'error');
@@ -1040,40 +1110,65 @@
             }
 
             processedSection.style.display = 'block';
-            processedSection.innerHTML = `
-                <h4 style="color: #a855f7; margin-bottom: 10px;">🎬 Processed Video (Cloudflare Stream)</h4>
+
+            // Build the player HTML (Iframe or Video)
+            let playerHtml = '';
+            if (iframeUrl) {
+                // Construct Iframe with poster if available
+                let src = iframeUrl + '?preload=true&autoplay=false';
+                if (data.signedThumbnails && data.signedThumbnails.length > 0) {
+                    src += `&poster=${encodeURIComponent(data.signedThumbnails[0])}`;
+                }
+
+                playerHtml = `
+                <div style="position: relative; padding-top: 177.77777777777777%;">
+                  <iframe
+                    src="${src}"
+                    loading="lazy"
+                    style="border: none; position: absolute; top: 0; left: 0; height: 100%; width: 100%; border-radius: 8px;"
+                    allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;"
+                    allowfullscreen="true"
+                    id="processedIframe"
+                  ></iframe>
+                </div>`;
+            } else {
+                playerHtml = `
                 <video id="processedPlayer" controls playsinline 
                        style="width: 100%; border-radius: 8px; background: #1a1a2e;">
-                </video>
+                </video>`;
+            }
+
+            processedSection.innerHTML = `
+                <h4 style="color: #a855f7; margin-bottom: 10px;">
+                    🎬 Processed Video (Cloudflare Stream) 
+                    ${isValid ? '<span style="color: #10b981; font-size: 0.8em">✅ Validated</span>' : '<span style="color: #ef4444; font-size: 0.8em">⚠️ Check Links</span>'}
+                </h4>
+                ${playerHtml}
                 <div class="source-urls" style="margin-top: 10px; font-size: 0.75rem; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 6px;">
-                    <strong>Stream UID:</strong> ${uid}<br>
-                    <strong>HLS URL:</strong> <a href="${hlsUrl}" target="_blank" style="color: #888; text-decoration: none;">${hlsUrl.substring(0, 40)}...</a>
+                    <div style="margin-bottom: 5px;"><strong>Stream UID:</strong> ${uid}</div>
+                    <div style="margin-bottom: 5px;"><strong>Iframe URL:</strong> <a href="${iframeUrl}" target="_blank" style="color: #64ffda; text-decoration: none;">Open Fullscreen 🔗</a></div>
+                    <div style="margin-bottom: 5px;"><strong>HLS URL:</strong> <a href="${hlsUrl}" target="_blank" style="color: #64ffda; text-decoration: none;">Active Link 🔗</a></div>
+                    ${dashUrl ? `<div style="margin-bottom: 5px;"><strong>DASH URL:</strong> <a href="${dashUrl}" target="_blank" style="color: #64ffda; text-decoration: none;">Active Link 🔗</a></div>` : ''}
+                    ${downloadUrl ? `<div style="margin-bottom: 5px;"><strong>Download (MP4):</strong> <a href="${downloadUrl}" target="_blank" style="color: #64ffda; text-decoration: none;">Download 💾</a></div>` : ''}
                 </div>
             `;
 
-            // Load HLS video
-            const video = document.getElementById('processedPlayer');
-
-            // Check if browser supports HLS natively (Safari)
-            if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                video.src = hlsUrl;
-            } else {
-                // Use HLS.js for other browsers
-                if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-                    const hls = new Hls();
-                    hls.loadSource(hlsUrl);
-                    hls.attachMedia(video);
-                    hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                        log(`   → HLS manifest loaded, ready to play`, 'success');
-                    });
-                    hls.on(Hls.Events.ERROR, (event, data) => {
-                        if (data.fatal) {
-                            log(`   → HLS error: ${data.type} - ${data.details}`, 'error');
-                        }
-                    });
+            // If we fell back to <video> tag (no iframeUrl), ensure HLS loads
+            if (!iframeUrl) {
+                // Load HLS video
+                const video = document.getElementById('processedPlayer');
+                // Check if browser supports HLS natively (Safari)
+                if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                    video.src = hlsUrl;
                 } else {
-                    log(`   → HLS not supported, video may not play`, 'warn');
-                    video.src = hlsUrl; // Try direct anyway
+                    // Use HLS.js for other browsers
+                    if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+                        const hls = new Hls();
+                        hls.loadSource(hlsUrl);
+                        hls.attachMedia(video);
+                    } else {
+                        video.src = hlsUrl; // Try direct anyway
+                    }
                 }
             }
         }
