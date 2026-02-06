@@ -1,11 +1,14 @@
-name = "luckycat-video"
+name = "lucky-cat-video-stream"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
-route = { pattern = "video.luckycat.me/*", zone_name = "luckycat.me" }
 
 [vars]
 NAKAMA_URL = "https://devel.luckycat.me"
 LUCKYCAT_API_URL = "https://api-devel.luckycat.me"
 
-# Cloudflare Stream Account ID (replace with real value)
-CLOUDFLARE_ACCOUNT_ID = ""
+# Secrets to configure via `wrangler secret put`:
+# CLOUDFLARE_ACCOUNT_ID
+# CLOUDFLARE_STREAM_API_TOKEN
+# CLOUDFLARE_STREAM_SIGNING_KEY_ID
+# CLOUDFLARE_STREAM_SIGNING_KEY_PEM
+# OPENROUTER_API_KEY
