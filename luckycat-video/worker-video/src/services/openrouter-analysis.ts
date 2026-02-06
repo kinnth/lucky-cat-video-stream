@@ -21,6 +21,16 @@ interface AnalysisResult {
     confidence: number
 }
 
+export interface AnalysisResponse {
+    result: AnalysisResult
+    debug: {
+        systemPrompt: string
+        userPrompt: string
+        screenshots: string[]
+        transcription?: string
+    }
+}
+
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
 /**
@@ -29,7 +39,7 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
 export async function analyzeVideo(
     request: AnalysisRequest,
     apiKey: string
-): Promise<AnalysisResult> {
+): Promise<AnalysisResponse> {
 
     // Build the prompt with keyframes
     const imageContent = request.thumbnailUrls.slice(0, 8).map(url => ({
@@ -41,10 +51,10 @@ export async function analyzeVideo(
 
 Output JSON with these exact fields:
 {
-  "title": "A concise, descriptive title (max 60 chars)",
-  "description": "A detailed description of the video content (100-200 words)",
+  "title": "A catchy title based on the content (max 60 chars). Can use an emoji if appropriate.",
+  "description": "A detailed description of what the video is about (100-200 words).",
   "category": "One of: Entertainment, Education, Gaming, Music, Sports, News, Cooking, Travel, Technology, Fashion, Fitness, Art, Comedy, Documentary, Kids",
-  "tags": ["array", "of", "5-10", "relevant", "tags"],
+  "tags": ["array", "of", "exactly", "5", "searchable", "tags"],
   "content_rating": "safe" | "sensitive" | "explicit",
   "language": "ISO 639-1 code (e.g., en, es, fr)",
   "mood": "One of: Happy, Calm, Energetic, Serious, Funny, Inspiring, Dramatic, Relaxing",
@@ -107,7 +117,15 @@ Provide the metadata JSON.`
 
     try {
         const result = JSON.parse(content) as AnalysisResult
-        return result
+        return {
+            result,
+            debug: {
+                systemPrompt,
+                userPrompt,
+                screenshots: request.thumbnailUrls.slice(0, 8),
+                transcription: request.captions
+            }
+        }
     } catch (parseError) {
         console.error('Failed to parse OpenRouter response:', content)
         throw new Error('Invalid JSON in OpenRouter response')

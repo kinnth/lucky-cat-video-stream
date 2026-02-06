@@ -477,40 +477,81 @@
                         <div class="metadata-label">Dimensions</div>
                         <div class="metadata-value" id="videoDimensions">-</div>
                     </div>
-                </div>
-            </div>
+                    <!-- Processed Video (Player) -->
+                    <div id="processedVideoSection" style="margin-top: 30px; display: none;">
+                        <!-- Processed video player injected here -->
+                    </div>
 
-            <!-- AI Metadata -->
-            <div class="panel">
-                <h2>🤖 AI Analysis Output</h2>
-                <div class="metadata-box">
-                    <div class="metadata-item">
-                        <div class="metadata-label">AI Title</div>
-                        <div class="metadata-value" id="aiTitle">-</div>
+                    <!-- Captions Panel -->
+                    <div id="captionsSection"
+                        style="margin-top: 20px; display: none; background: #1a1a2e; padding: 15px; border-radius: 8px; border: 1px solid #333;">
+                        <h4 style="color: #64ffda; margin-bottom: 10px;">📝 Generated Captions (VTT)</h4>
+                        <pre id="captionsContent"
+                            style="max-height: 200px; overflow-y: auto; background: #111; padding: 10px; border-radius: 4px; font-size: 0.8em; color: #bbb; white-space: pre-wrap; font-family: monospace;"></pre>
                     </div>
-                    <div class="metadata-item">
-                        <div class="metadata-label">AI Description</div>
-                        <div class="metadata-value" id="aiDescription">-</div>
+
+                    <!-- AI Metadata -->
+                    <div class="panel">
+                        <h2>🤖 AI Analysis Output</h2>
+                        <div class="metadata-box">
+                            <div class="metadata-item">
+                                <div class="metadata-label">AI Title</div>
+                                <div class="metadata-value" id="aiTitle">-</div>
+                            </div>
+                            <div class="metadata-item">
+                                <div class="metadata-label">AI Description</div>
+                                <div class="metadata-value" id="aiDescription">-</div>
+                            </div>
+                            <div class="metadata-item">
+                                <div class="metadata-label">Category</div>
+                                <div class="metadata-value" id="aiCategory">-</div>
+                            </div>
+                            <div class="metadata-item">
+                                <div class="metadata-label">Content Rating</div>
+                                <div class="metadata-value" id="aiRating">-</div>
+                            </div>
+                            <div class="metadata-item">
+                                <div class="metadata-label">Tags</div>
+                                <div class="tags" id="aiTags">-</div>
+                            </div>
+                            <div class="metadata-item">
+                                <div class="metadata-label">Mood / Language</div>
+                                <div class="metadata-value" id="aiMood">-</div>
+                            </div>
+                            <div class="metadata-item">
+                                <div class="metadata-label">Confidence</div>
+                                <div class="metadata-value" id="aiConfidence">-</div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="metadata-item">
-                        <div class="metadata-label">Category</div>
-                        <div class="metadata-value" id="aiCategory">-</div>
+                </div>
+
+                <div id="aiDebug"
+                    style="margin-top: 20px; border-top: 1px solid #333; padding-top: 10px; display: none;">
+                    <h4 style="color: #64ffda; margin-bottom: 10px;">🛠️ AI Debug Info</h4>
+
+                    <div style="margin-bottom: 15px;">
+                        <strong style="color: #888;">System Prompt:</strong>
+                        <pre id="debugSystemPrompt"
+                            style="background: #111; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 0.8em; color: #bbb; white-space: pre-wrap;"></pre>
                     </div>
-                    <div class="metadata-item">
-                        <div class="metadata-label">Content Rating</div>
-                        <div class="metadata-value" id="aiRating">-</div>
+
+                    <div style="margin-bottom: 15px;">
+                        <strong style="color: #888;">User Prompt:</strong>
+                        <pre id="debugUserPrompt"
+                            style="background: #111; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 0.8em; color: #bbb; white-space: pre-wrap;"></pre>
                     </div>
-                    <div class="metadata-item">
-                        <div class="metadata-label">Tags</div>
-                        <div class="tags" id="aiTags">-</div>
+
+                    <div style="margin-bottom: 15px;">
+                        <strong style="color: #888;">Transcription (VTT):</strong>
+                        <pre id="debugTranscription"
+                            style="max-height: 150px; overflow-y: auto; background: #111; padding: 10px; border-radius: 4px; font-size: 0.8em; color: #bbb; white-space: pre-wrap;"></pre>
                     </div>
-                    <div class="metadata-item">
-                        <div class="metadata-label">Mood / Language</div>
-                        <div class="metadata-value" id="aiMood">-</div>
-                    </div>
-                    <div class="metadata-item">
-                        <div class="metadata-label">Confidence</div>
-                        <div class="metadata-value" id="aiConfidence">-</div>
+
+                    <div style="margin-bottom: 15px;">
+                        <strong style="color: #888;">Analyzed Screenshots:</strong>
+                        <div id="debugScreenshots" style="display: flex; gap: 5px; overflow-x: auto; padding: 5px 0;">
+                        </div>
                     </div>
                 </div>
             </div>
@@ -553,16 +594,34 @@
         }
 
         function selectVideo(el) {
-            document.querySelectorAll('.video-card').forEach(c => c.classList.remove('selected'));
-            el.classList.add('selected');
-            selectedDmId = el.dataset.id;
-            document.getElementById('loadBtn').disabled = false;
-            log(`✅ Selected video: ${selectedDmId}`, 'success');
-            setStep(1);
+            console.log('Video clicked:', el.dataset.id);
+            try {
+                document.querySelectorAll('.video-card').forEach(c => c.classList.remove('selected'));
+                el.classList.add('selected');
+                selectedDmId = el.dataset.id;
+
+                const btn = document.getElementById('loadBtn');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.classList.remove('disabled'); // Ensure class is removed if custom css uses it
+                    log(`✅ Selected video: ${selectedDmId}`, 'success');
+                } else {
+                    console.error('FATAL: loadBtn element not found');
+                }
+                setStep(1);
+            } catch (e) {
+                console.error('Error in selectVideo:', e);
+                log(`❌ Selection error: ${e.message}`, 'error');
+            }
         }
 
         async function loadVideo() {
-            if (!selectedDmId) return;
+            console.log('loadVideo initiated. ID:', selectedDmId);
+            if (!selectedDmId) {
+                alert('⚠️ Please select a video first by clicking one of the cards above.');
+                log('⚠️ Load attempted without video selection', 'warn');
+                return;
+            }
 
             const btn = document.getElementById('loadBtn');
             btn.disabled = true;
@@ -741,6 +800,9 @@
 
         function startStatusPolling(uid) {
             let pollCount = 0;
+            let pollErrorCount = 0;
+            let captionPollCount = 0;
+            let captionTriggered = false;
             const maxPolls = 60; // 5 minutes max
 
             document.getElementById('status').textContent = 'Queued';
@@ -750,9 +812,7 @@
                 pollCount++;
 
                 try {
-                    const response = await fetch(`${WORKER_URL}/status/${uid}`, {
-                        headers: { 'Authorization': 'Bearer test-token' }
-                    });
+                    const response = await fetch(`${WORKER_URL}/status/${uid}`);
 
                     const data = await response.json();
 
@@ -795,23 +855,7 @@
                         document.getElementById('status').textContent = data.state;
                         document.getElementById('status').className = 'status queued';
                         setProgress(20);
-                    } else if (data.state === 'inprogress') {
-                        // Step 2d: Trigger AI Caption Generation
-                        log(`   → Triggering AI Caption Generation...`, 'info');
-                        try {
-                            const capResponse = await fetch(`${WORKER_URL}/captions/generate/${uid}`, { method: 'POST' });
-                            const capResult = await capResponse.json();
-                            if (capResult.success) {
-                                log(`   → Captions triggered successfully`, 'success');
-                            } else {
-                                log(`   ⚠️ Caption trigger warning: ${capResult.error}`, 'warn');
-                            }
-                        } catch (capErr) {
-                            log(`   ⚠️ Failed to trigger captions: ${capErr.message}`, 'warn');
-                        }
-
-                        document.getElementById('status').textContent = 'Processing';
-                        document.getElementById('status').className = 'status processing';
+                        // Processing...
                         const pct = parseInt(data.pctComplete) || 50;
                         setProgress(20 + (pct * 0.6));
                     }
@@ -820,57 +864,90 @@
 
                     // Check if ready
                     if (data.readyToStream) {
-                        clearInterval(statusPollInterval);
-                        statusPollInterval = null;
+                        // Do NOT clear interval yet if we are waiting for captions
+
                         setProgress(100);
 
                         document.getElementById('status').textContent = 'Ready';
                         document.getElementById('status').className = 'status ready';
                         document.getElementById('analyzeBtn').disabled = false;
+                        setStep(4);
+                        if (captionPollCount === 0) log(`🤖 [STEP 4] Video Ready. Analysis enabled (Captions processing in background).`, 'info');
 
-                        log(`✅ [STEP 3 COMPLETE] Video is ready to stream!`, 'success');
-                        log(`   → Duration: ${data.duration?.toFixed(1)}s, Dimensions: ${data.dimensions}`, 'success');
+                        // Only log "ready" once (implied by poll count or flag? simpler to just log)
+                        // log(`✅ [STEP 3 COMPLETE] Video is ready to stream!`, 'success');
 
-                        // DEBUG: Log full data object to console to inspect structure
-                        console.log('Video Ready Data:', data);
+                        // Check for Captions
+                        const captions = data.captions || [];
+                        const readyCaption = captions.find(c => c.status === 'ready' && c.generated); // AI usually marks 'generated: true'
+                        // Fallback: just check for ANY ready caption if AI flag missing
+                        const anyReadyCaption = captions.find(c => c.status === 'ready');
+                        const inProgress = captions.find(c => c.status === 'inprogress');
 
-                        // Check for signing errors returned by worker
-                        if (data.error && data.error.code === 'SIGNING_FAILED') {
-                            log(`⚠️ Signing Failed: ${data.error.message}`, 'warn');
-                            log(`   → ${data.error.details}`, 'warn');
+                        if (!anyReadyCaption && !captionTriggered && !inProgress) {
+                            log(`   → Video ready. Triggering AI Caption Generation...`, 'info');
+                            captionTriggered = true;
+
+                            fetch(`${WORKER_URL}/captions/generate/${uid}`, { method: 'POST' })
+                                .catch(e => log(`   ⚠️ Failed to trigger captions: ${e.message}`, 'warn'));
                         }
 
-                        // Update keyframes to use signed Stream thumbnails
+                        // WAITING FOR CAPTIONS LOGIC
+                        if (!anyReadyCaption && captionPollCount < 60) {
+                            captionPollCount++;
+                            const state = inProgress ? 'Generating' : 'Pending';
+                            if (captionPollCount % 4 === 0) log(`   ⏳ Captions: ${state}... (Poll ${captionPollCount}/60) - You can click Analyze now.`, 'info');
+                            // CONTINUE POLLING
+                            return;
+                        }
+
+                        // CAPTIONS DONE or TIMEOUT -> Stop Polling
+                        clearInterval(statusPollInterval);
+                        statusPollInterval = null;
+
+                        log(`✅ [STEP 3 COMPLETE] Video & Captions Ready!`, 'success');
+                        log(`   → Duration: ${data.duration?.toFixed(1)}s, Dimensions: ${data.dimensions}`, 'success');
+
+                        // Display Captions if available
+                        if (anyReadyCaption) {
+                            log(`   ✅ Captions detected: ${anyReadyCaption.label} (${anyReadyCaption.language})`, 'success');
+                            fetch(`${WORKER_URL}/captions/${uid}`)
+                                .then(r => r.text())
+                                .then(text => {
+                                    document.getElementById('captionsSection').style.display = 'block';
+                                    document.getElementById('captionsContent').textContent = text;
+                                    log(`   📄 Captions loaded into panel`, 'success');
+                                })
+                                .catch(e => log(`   ⚠️ Failed to load caption text: ${e.message}`, 'warn'));
+                        } else {
+                            log(`   ⚠️ Captions timed out or failed.`, 'warn');
+                        }
+
+                        // Update keyframes
                         if (data.signedThumbnails && data.signedThumbnails.length > 0) {
-                            log(`   → Using ${data.signedThumbnails.length} signed thumbnails`, 'success');
                             displaySignedThumbnails(data.signedThumbnails, data.duration);
                         } else {
-                            log(`   → No signed thumbnails available.`, 'warn');
-                            if (!data.signedThumbnails) log(`   → data.signedThumbnails is undefined/null`, 'error');
                             generateStreamKeyframes(uid, data.duration);
                         }
 
-                        // Show the processed video from Cloudflare Stream
+                        // Show the processed video
                         if (data.signedPlaybackUrl) {
-                            log(`   → Signed playback URL available, validating...`, 'info');
                             validateAndShowVideo(data, uid);
-                        } else {
-                            log(`   → Signed playback URL missing!`, 'error');
                         }
 
                         setStep(4);
-                        log(`🤖 [STEP 4] Ready for AI analysis. Click the button to proceed.`, 'info');
-                    }
+                        log(`🤖 [STEP 4] Ready for AI analysis.`, 'info');
 
-                    // Check for errors
-                    if (data.error) {
-                        clearInterval(statusPollInterval);
-                        statusPollInterval = null;
-                        log(`❌ [STEP 3 FAILED] ${data.error.code}: ${data.error.message}`, 'error');
-                        document.getElementById('status').textContent = 'Error';
-                        document.getElementById('status').className = 'status error';
-                    }
 
+                        // Check for errors
+                        if (data.error) {
+                            clearInterval(statusPollInterval);
+                            statusPollInterval = null;
+                            log(`❌ [STEP 3 FAILED] ${data.error.code}: ${data.error.message}`, 'error');
+                            document.getElementById('status').textContent = 'Error';
+                            document.getElementById('status').className = 'status error';
+                        }
+                    }
                 } catch (error) {
                     log(`   → Poll ${pollCount}: Network error - ${error.message}`, 'warn');
                 }
@@ -907,16 +984,17 @@
                 const response = await fetch(`${WORKER_URL}/analyze/${currentStreamUid}`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': 'Bearer test-token'
+                        'Content-Type': 'application/json'
+                        // Auth removed
                     }
                 });
 
                 const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
                 const data = await response.json();
 
-                if (data.success && data.analysis) {
-                    const a = data.analysis;
+                if (data.success && data.result) {
+                    const a = data.result; // Updated from data.analysis
+                    const d = data.debug;
                     log(`   → Analysis completed in ${elapsed}s`, 'success');
 
                     document.getElementById('aiTitle').textContent = a.title || '-';
@@ -929,6 +1007,21 @@
                     document.getElementById('aiConfidence').textContent = a.confidence
                         ? `${(a.confidence * 100).toFixed(0)}%` : '-';
 
+                    // Populate Debug Info
+                    if (d) {
+                        document.getElementById('aiDebug').style.display = 'block';
+                        document.getElementById('debugSystemPrompt').textContent = d.systemPrompt || 'N/A';
+                        document.getElementById('debugUserPrompt').textContent = d.userPrompt || 'N/A';
+                        document.getElementById('debugTranscription').textContent = d.transcription ? d.transcription.substring(0, 1000) + (d.transcription.length > 1000 ? '...' : '') : '(No transcription used)';
+
+                        const shotContainer = document.getElementById('debugScreenshots');
+                        shotContainer.innerHTML = (d.screenshots || []).map(url =>
+                            `<a href="${url}" target="_blank"><img src="${url}" style="height: 60px; border-radius: 4px; border: 1px solid #444;"></a>`
+                        ).join('');
+
+                        log(`   → Debug info loaded (Prompts + ${d.screenshots?.length || 0} screenshots)`, 'info');
+                    }
+
                     document.getElementById('status').textContent = 'Complete';
                     document.getElementById('status').className = 'status ready';
 
@@ -938,6 +1031,9 @@
                     log(`   → Tags: ${a.tags?.join(', ')}`, 'success');
                     log(`   → Content Rating: ${a.content_rating}`, 'success');
                     log(`   → Confidence: ${(a.confidence * 100).toFixed(0)}%`, 'success');
+                    if (data.cfUpdateStatus) {
+                        log(`   → Cloudflare Sync: ${data.cfUpdateStatus}`, data.cfUpdateStatus === 'success' ? 'success' : 'warn');
+                    }
 
                 } else {
                     log(`❌ [STEP 4 FAILED] ${data.error || 'Unknown error'}`, 'error');

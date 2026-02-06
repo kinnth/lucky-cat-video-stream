@@ -145,6 +145,26 @@ app.get('/status/:uid', async (c) => {
         // Safety check to handle unwrapped responses if API differs
         const video = data.result || data // Fallback if result wrapper is missing
 
+        // Fetch captions status
+        // We need to know if captions exist to report to the client
+        let captions: any[] = []
+        try {
+            // To check captions, we list them
+            const capResponse = await fetch(
+                `https://api.cloudflare.com/client/v4/accounts/${c.env.CLOUDFLARE_ACCOUNT_ID}/stream/${uid}/captions`,
+                {
+                    method: 'GET',
+                    headers: { 'Authorization': `Bearer ${c.env.CLOUDFLARE_STREAM_API_TOKEN}` }
+                }
+            )
+            if (capResponse.ok) {
+                const capData = await capResponse.json() as any
+                captions = capData.result || []
+            }
+        } catch (e) {
+            console.warn('[STATUS] Failed to check captions', e)
+        }
+
         // PUBLIC ACCESS MODE: No signing logic.
         // Directly map public Cloudflare Stream URLs.
         const playbackUrl = video.playback?.hls || null;
@@ -192,6 +212,8 @@ app.get('/status/:uid', async (c) => {
             signedDownloadUrl: downloadUrl,
             signedThumbnails: thumbnails,
 
+            captions: captions, // Return the list of captions
+
             iframeUrl: video.readyToStream ? `https://${domain}/${video.uid}/iframe` : null,
             error: video.status.errorReasonCode ? {
                 code: video.status.errorReasonCode,
@@ -222,19 +244,16 @@ app.post('/captions/generate/:uid', async (c) => {
         // BUT calling it "PUT" with "language/en" sometimes is for uploading VTTs.
         // Let's try the POST method with generated flag which works on newer endpoints.
 
+        // Correct API endpoint for AI generation (per Cloudflare docs):
+        // POST .../stream/<UID>/captions/<LANG>/generate
         const response = await fetch(
-            `https://api.cloudflare.com/client/v4/accounts/${c.env.CLOUDFLARE_ACCOUNT_ID}/stream/${uid}/captions`,
+            `https://api.cloudflare.com/client/v4/accounts/${c.env.CLOUDFLARE_ACCOUNT_ID}/stream/${uid}/captions/en/generate`,
             {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${c.env.CLOUDFLARE_STREAM_API_TOKEN}`,
                     'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    language: 'en',
-                    label: 'English (AI)',
-                    generated: true
-                })
+                }
             }
         )
 
@@ -357,10 +376,7 @@ app.post('/upload/direct', async (c) => {
 
 // Admin/Migration: Ingest video from URL
 app.post('/upload/url', async (c) => {
-    const authHeader = c.req.header('Authorization')
-    if (!authHeader) {
-        return c.json({ error: 'Unauthorized' }, 401)
-    }
+    // Auth check removed for public access
 
     try {
         const body = await c.req.json() as { url: string; meta?: Record<string, string> }
@@ -441,7 +457,8 @@ app.post('/upload/url', async (c) => {
         const tusHeadersObj: Record<string, string> = {
             'Authorization': `Bearer ${c.env.CLOUDFLARE_STREAM_API_TOKEN}`,
             'Tus-Resumable': '1.0.0',
-            'Upload-Metadata': `requiresignedurls dHJ1ZQ==, name ${btoa(body.meta?.dm_id || 'video')}`
+            // requiresignedurls false (base64: ZmFsc2U=)
+            'Upload-Metadata': `requiresignedurls ZmFsc2U=, name ${btoa(body.meta?.dm_id || 'video')}`
         }
 
         if (contentLength) {
@@ -536,11 +553,7 @@ app.post('/webhook', async (c) => {
 app.post('/analyze/:uid', async (c) => {
     const uid = c.req.param('uid')
 
-    // Simple auth check
-    const authHeader = c.req.header('Authorization')
-    if (!authHeader) {
-        return c.json({ error: 'Unauthorized' }, 401)
-    }
+    // Auth check removed for public access
 
     if (!c.env.OPENROUTER_API_KEY) {
         return c.json({ error: 'OpenRouter API key not configured' }, 500)
@@ -578,30 +591,125 @@ app.post('/analyze/:uid', async (c) => {
         console.log(`[ANALYZE] Analyzing video ${uid} with ${thumbnailUrls.length} keyframes`)
         console.log(`[ANALYZE] Keyframe URLs:`, thumbnailUrls.map(u => u.split('?')[1]))
 
+        // Fetch captions (English) to include in analysis
+        let captionsText: string | undefined
+        try {
+            console.log(`[ANALYZE] Fetching captions for ${uid}...`)
+            const vttResponse = await fetch(
+                `https://api.cloudflare.com/client/v4/accounts/${c.env.CLOUDFLARE_ACCOUNT_ID}/stream/${uid}/captions/en`,
+                {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${c.env.CLOUDFLARE_STREAM_API_TOKEN}`,
+                        'Accept': 'text/vtt'
+                    }
+                }
+            )
+
+            if (vttResponse.ok) {
+                captionsText = await vttResponse.text()
+                console.log(`[ANALYZE] Captions fetched, length: ${captionsText.length}`)
+            } else {
+                console.warn(`[ANALYZE] No captions found or fetch failed: ${vttResponse.status}`)
+            }
+        } catch (e) {
+            console.warn(`[ANALYZE] Error fetching captions:`, e)
+        }
+
         // Call OpenRouter for analysis
         const analysis = await analyzeVideo(
             {
                 videoId: uid,
                 thumbnailUrls,
-                duration
+                duration,
+                captions: captionsText
             },
             c.env.OPENROUTER_API_KEY
         )
+
+        // Update Cloudflare Stream metadata with AI Analysis
+        let cfUpdateStatus = 'skipped'
+        try {
+            console.log(`[ANALYZE] Updating Cloudflare metadata for ${uid}...`)
+            const updatePayload = {
+                meta: {
+                    name: analysis.result.title,
+                    description: analysis.result.description,
+                    tags: Array.isArray(analysis.result.tags) ? analysis.result.tags.join(',') : analysis.result.tags,
+                    ai_generated: "true",
+                    ai_confidence: analysis.result.confidence.toString()
+                }
+            }
+
+            const updateResponse = await fetch(
+                `https://api.cloudflare.com/client/v4/accounts/${c.env.CLOUDFLARE_ACCOUNT_ID}/stream/${uid}`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${c.env.CLOUDFLARE_STREAM_API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(updatePayload)
+                }
+            )
+
+            if (!updateResponse.ok) {
+                const err = await updateResponse.text()
+                console.warn(`[ANALYZE] Failed to update Cloudflare metadata: ${updateResponse.status} - ${err}`)
+                cfUpdateStatus = `failed: ${updateResponse.status}`
+            } else {
+                console.log(`[ANALYZE] Cloudflare metadata updated successfully`)
+                cfUpdateStatus = 'success'
+            }
+
+        } catch (updateError) {
+            console.warn(`[ANALYZE] Error updating Cloudflare metadata:`, updateError)
+            cfUpdateStatus = 'error'
+        }
 
         return c.json({
             success: true,
             uid,
             duration,
-            analysis
+            result: analysis.result,
+            debug: analysis.debug,
+            cfUpdateStatus
         })
 
     } catch (error) {
         console.error('Analysis error:', error)
-        return c.json({
-            error: 'Analysis failed',
-            details: error instanceof Error ? error.message : 'Unknown error'
-        }, 500)
+        return c.json({ error: 'Analysis failed', details: error instanceof Error ? error.message : String(error) }, 500)
     }
 })
+
+// Proxy endpoint to get captions (VTT) for the client
+app.get('/captions/:uid', async (c) => {
+    const uid = c.req.param('uid')
+    // Auth removed for public access
+
+    try {
+        const response = await fetch(
+            `https://api.cloudflare.com/client/v4/accounts/${c.env.CLOUDFLARE_ACCOUNT_ID}/stream/${uid}/captions/en`,
+            {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${c.env.CLOUDFLARE_STREAM_API_TOKEN}`,
+                    'Accept': 'text/vtt'
+                }
+            }
+        )
+
+        if (!response.ok) {
+            return c.json({ error: 'Failed to fetch captions', status: response.status }, 502)
+        }
+
+        const vttText = await response.text()
+        return c.text(vttText)
+
+    } catch (error) {
+        return c.json({ error: 'Internal server error fetching captions' }, 500)
+    }
+})
+
 
 export default app
