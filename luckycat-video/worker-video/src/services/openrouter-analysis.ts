@@ -115,8 +115,11 @@ Please provide your analysis in the metadata JSON format requested. Be extremely
         throw new Error('No content in OpenRouter response')
     }
 
+    // Clean content (remove markdown fences if present)
+    const cleanedContent = content.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '').trim()
+
     try {
-        const result = JSON.parse(content) as AnalysisResult
+        const result = JSON.parse(cleanedContent) as AnalysisResult
         return {
             result,
             debug: {
@@ -127,14 +130,15 @@ Please provide your analysis in the metadata JSON format requested. Be extremely
             }
         }
     } catch (parseError) {
-        console.error('Failed to parse OpenRouter response:', content)
-        throw new Error('Invalid JSON in OpenRouter response')
+        console.error('Failed to parse OpenRouter response. Raw:', content, 'Cleaned:', cleanedContent)
+        throw new Error(`Invalid JSON in OpenRouter response: ${cleanedContent.substring(0, 50)}...`)
     }
 }
 
 /**
  * Generate thumbnail URLs for a Cloudflare Stream video
  * Times are calculated based on video duration for even distribution
+ * IMPORTANT: Timestamps must not exceed (duration - 0.1) or Cloudflare returns 400
  */
 export function generateThumbnailUrls(
     streamUid: string,
@@ -142,31 +146,42 @@ export function generateThumbnailUrls(
     count: number = 8,
     duration?: number
 ): string[] {
-    // Use customer specific domain to ensure access (OpenRouter/Gemini sometimes struggles with videodelivery.net redirects)
-    const baseUrl = `https://customer-${accountId}.cloudflarestream.com/${streamUid}/thumbnails/thumbnail.jpg`
+    // Use standard videodelivery.net domain which is often more reliable for fresh uploads
+    const baseUrl = `https://videodelivery.net/${streamUid}/thumbnails/thumbnail.jpg`
 
     let times: number[]
 
     if (!duration || duration <= 0) {
         // Fallback to default times if no duration
         times = [1, 5, 10, 20, 30, 45, 60, 90].slice(0, count)
-    } else if (duration <= 10) {
-        // Very short video: spread evenly with smaller intervals
-        times = Array.from({ length: count }, (_, i) =>
-            Math.max(0.1, Number((duration * i / (count - 1)).toFixed(1)))
-        )
-    } else if (duration <= 60) {
-        // Short video (under 1 min): evenly distributed
-        times = Array.from({ length: count }, (_, i) =>
-            Math.round(duration * i / (count - 1))
-        )
     } else {
-        // Longer video: use percentage-based distribution
-        const percentages = [0.02, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95]
-        times = percentages.slice(0, count).map(p => Math.round(duration * p))
+        // Calculate max safe time (slightly before end to avoid 400 errors)
+        const maxTime = Math.max(0, duration - 0.5)
+
+        if (duration <= 10) {
+            // Very short video: spread evenly with smaller intervals
+            times = Array.from({ length: count }, (_, i) => {
+                const t = (maxTime * i) / (count - 1)
+                return Math.max(0.1, Number(t.toFixed(1)))
+            })
+        } else if (duration <= 60) {
+            // Short video (under 1 min): evenly distributed
+            times = Array.from({ length: count }, (_, i) => {
+                const t = (maxTime * i) / (count - 1)
+                return Math.floor(t)
+            })
+        } else {
+            // Longer video: use percentage-based distribution
+            const percentages = [0.02, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95]
+            times = percentages.slice(0, count).map(p => Math.floor(duration * p))
+        }
+
+        // Ensure first frame is at least 0.1s and last frame doesn't exceed maxTime
+        times[0] = Math.max(0.1, times[0])
+        times[times.length - 1] = Math.min(times[times.length - 1], Math.floor(maxTime))
     }
 
-    console.log(`[KEYFRAMES] Generated times for ${duration}s video:`, times)
+    console.log(`[KEYFRAMES] Generated times for ${duration}s video (max safe: ${duration ? duration - 0.5 : 'N/A'}):`, times)
 
     return times.map(t => `${baseUrl}?time=${t}s&width=640`)
 }

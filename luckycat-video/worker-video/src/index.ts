@@ -617,13 +617,37 @@ app.post('/analyze/:uid', async (c) => {
         )
 
         console.log(`[ANALYZE] Analyzing video ${uid} with ${thumbnailUrls.length} keyframes`)
-        console.log(`[ANALYZE] Keyframe URLs:`, thumbnailUrls.map(u => u.split('?')[1]))
+        console.log(`[ANALYZE] Validating each thumbnail URL...`)
+
+        // Validate EACH thumbnail individually
+        const validatedUrls: string[] = []
+        for (const url of thumbnailUrls) {
+            try {
+                const head = await fetch(url, { method: 'HEAD' })
+                if (head.ok) {
+                    validatedUrls.push(url)
+                    console.log(`[ANALYZE] ✓ ${url.split('?')[1]}`)
+                } else {
+                    console.log(`[ANALYZE] ✗ ${url.split('?')[1]} -> ${head.status}`)
+                }
+            } catch (e) {
+                console.log(`[ANALYZE] ✗ ${url.split('?')[1]} -> Error`)
+            }
+        }
+
+        if (validatedUrls.length === 0) {
+            console.warn(`[ANALYZE] No thumbnails available! Aborting.`)
+            return c.json({ error: 'No video thumbnails available', details: 'All thumbnail URLs returned errors' }, 422)
+        }
+
+        console.log(`[ANALYZE] ${validatedUrls.length}/${thumbnailUrls.length} thumbnails validated OK`)
+        console.log(`[ANALYZE] Sending to AI:`, validatedUrls.map(u => u.split('?')[1]))
 
         // Call OpenRouter for analysis
         const analysis = await analyzeVideo(
             {
                 videoId: uid,
-                thumbnailUrls,
+                thumbnailUrls: validatedUrls,
                 duration,
                 captions: captionsText
             },
