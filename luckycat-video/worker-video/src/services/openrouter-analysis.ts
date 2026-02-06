@@ -1,0 +1,129 @@
+/**
+ * OpenRouter AI Analysis Service
+ * Analyzes video keyframes and captions to generate metadata
+ */
+
+interface AnalysisRequest {
+    videoId: string
+    thumbnailUrls: string[]
+    captions?: string
+    duration?: number
+}
+
+interface AnalysisResult {
+    title: string
+    description: string
+    category: string
+    tags: string[]
+    content_rating: 'safe' | 'sensitive' | 'explicit'
+    language: string
+    mood: string
+    confidence: number
+}
+
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
+
+/**
+ * Analyze video using OpenRouter with vision-capable model
+ */
+export async function analyzeVideo(
+    request: AnalysisRequest,
+    apiKey: string
+): Promise<AnalysisResult> {
+
+    // Build the prompt with keyframes
+    const imageContent = request.thumbnailUrls.slice(0, 8).map(url => ({
+        type: 'image_url' as const,
+        image_url: { url }
+    }))
+
+    const systemPrompt = `You are a video content analyzer. Analyze the provided video keyframes and any available captions to generate accurate metadata.
+
+Output JSON with these exact fields:
+{
+  "title": "A concise, descriptive title (max 60 chars)",
+  "description": "A detailed description of the video content (100-200 words)",
+  "category": "One of: Entertainment, Education, Gaming, Music, Sports, News, Cooking, Travel, Technology, Fashion, Fitness, Art, Comedy, Documentary, Kids",
+  "tags": ["array", "of", "5-10", "relevant", "tags"],
+  "content_rating": "safe" | "sensitive" | "explicit",
+  "language": "ISO 639-1 code (e.g., en, es, fr)",
+  "mood": "One of: Happy, Calm, Energetic, Serious, Funny, Inspiring, Dramatic, Relaxing",
+  "confidence": 0.0-1.0 (how confident you are in this analysis)
+}
+
+Be accurate and descriptive. Focus on what's actually visible in the frames.`
+
+    const userPrompt = `Analyze these ${request.thumbnailUrls.length} keyframes from a video${request.duration ? ` (duration: ${request.duration}s)` : ''}.
+${request.captions ? `\nAvailable captions/transcript:\n${request.captions}` : ''}
+
+Provide the metadata JSON.`
+
+    const messages = [
+        { role: 'system', content: systemPrompt },
+        {
+            role: 'user',
+            content: [
+                { type: 'text', text: userPrompt },
+                ...imageContent
+            ]
+        }
+    ]
+
+    const response = await fetch(OPENROUTER_API_URL, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://luckycat.me',
+            'X-Title': 'LuckyCat Video Analyzer'
+        },
+        body: JSON.stringify({
+            model: 'google/gemini-2.0-flash-001',
+            messages,
+            max_tokens: 1000,
+            temperature: 0.3,
+            response_format: { type: 'json_object' }
+        })
+    })
+
+    if (!response.ok) {
+        const errorText = await response.text()
+        console.error('OpenRouter API error:', errorText)
+        throw new Error(`OpenRouter API failed: ${response.status}`)
+    }
+
+    const data = await response.json() as {
+        choices: Array<{
+            message: {
+                content: string
+            }
+        }>
+    }
+
+    const content = data.choices?.[0]?.message?.content
+    if (!content) {
+        throw new Error('No content in OpenRouter response')
+    }
+
+    try {
+        const result = JSON.parse(content) as AnalysisResult
+        return result
+    } catch (parseError) {
+        console.error('Failed to parse OpenRouter response:', content)
+        throw new Error('Invalid JSON in OpenRouter response')
+    }
+}
+
+/**
+ * Generate thumbnail URLs for a Cloudflare Stream video
+ */
+export function generateThumbnailUrls(
+    streamUid: string,
+    accountId: string,
+    count: number = 8
+): string[] {
+    const times = [1, 5, 10, 20, 30, 45, 60, 90]
+    const baseUrl = `https://customer-${accountId}.cloudflarestream.com/${streamUid}/thumbnails/thumbnail.jpg`
+
+    return times.slice(0, count).map(t => `${baseUrl}?time=${t}s&width=640`)
+}
