@@ -683,7 +683,15 @@
                 });
 
                 if (!response || !response.ok) {
-                    throw new Error(response ? `API Error ${response.status}` : 'Network Error');
+                    let details = '';
+                    try {
+                        if (response) {
+                            const errData = await response.json();
+                            details = errData.details || errData.error || await response.text();
+                        }
+                    } catch (e) { /* ignore parse error */ }
+
+                    throw new Error(response ? `API Error ${response.status}: ${details}` : 'Network Error');
                 }
 
                 const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
