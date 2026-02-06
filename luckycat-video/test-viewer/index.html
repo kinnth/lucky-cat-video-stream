@@ -928,6 +928,9 @@
                     })
                     .catch(e => log(`   ⚠️ Caption trigger error: ${e.message}`, 'warn'));
 
+                // Poll for captions in background
+                pollForCaptions(uid);
+
                 // Auto-advance to AI analysis even if captions are missing
                 setTimeout(() => analyzeWithAI(), 2000); // Give it a moment
             }
@@ -1001,6 +1004,55 @@
                 btn.disabled = false;
                 btn.textContent = '🤖 Trigger Analysis';
             }
+        }
+
+        async function pollForCaptions(uid) {
+            let attempts = 0;
+            const maxAttempts = 30; // 60 seconds (2s interval)
+
+            const interval = setInterval(async () => {
+                attempts++;
+                if (attempts > maxAttempts) {
+                    clearInterval(interval);
+                    log('   ⚠️ Caption polling timed out', 'warn');
+                    return;
+                }
+
+                try {
+                    log(`   ... checking for captions (attempt ${attempts})`, 'default');
+                    updateStatus(`Checking captions (${attempts})...`, 'processing');
+
+                    // Check if captions are ready via the proxy endpoint
+                    const res = await fetch(`${WORKER_URL}/captions/${uid}`);
+                    if (res.ok) {
+                        const d = await res.json();
+
+                        // Check if we actually got content
+                        if (d.vtt && d.vtt.length > 10) { // Check for minimal length > header
+                            clearInterval(interval);
+
+                            document.getElementById('captionsSection').style.display = 'block';
+                            document.getElementById('captionsContent').value = d.plainText || d.vtt;
+
+                            const csvBox = document.getElementById('csvContent');
+                            if (csvBox) csvBox.value = d.csv || '(No CSV generated)';
+
+                            log(`   📄 Captions available! (${d.vtt.length} chars)`, 'success');
+                            updateStatus('Captions Found', 'success');
+
+                            // Optional: Re-run AI analysis if it was run without captions?
+                            // For now, just show them.
+                        } else {
+                            // Captions might be empty or just header
+                            log(`   ... captions response received but empty/short`, 'warn');
+                        }
+                    } else {
+                        log(`   ... caption check failed: ${res.status}`, 'warn');
+                    }
+                } catch (e) {
+                    // Ignore errors during polling
+                }
+            }, 2000);
         }
 
         function populateAnalysisResults(a, d) {
