@@ -1,3 +1,34 @@
+# =============================================================================
+# LuckyCat Video Stream Worker
+# =============================================================================
+#
+# ARCHITECTURE:
+#   - This Worker is the VIDEO API backend (JSON endpoints for upload, status,
+#     captions, AI analysis, etc.)
+#   - It is deployed to: lucky-cat-video-stream.kinnth.workers.dev
+#   - The FRONTEND (test-viewer HTML/CSS/JS) is a separate Cloudflare Pages
+#     deployment served at: testvideo.luckycat.me
+#   - The frontend calls this Worker's API endpoints
+#
+# DEPLOYMENT:
+#   Cloudflare CI/CD builds from the Git repo. Because the worker code lives
+#   in a subdirectory (luckycat-video/worker-video/), the Cloudflare dashboard
+#   build settings must be configured as:
+#
+#     Root directory:    luckycat-video/worker-video
+#     Build command:     npm install && npx wrangler deploy
+#
+#   Or alternatively, set the build command to:
+#     cd luckycat-video/worker-video && npm install && npx wrangler deploy
+#   with root directory left as / (repo root).
+#
+# LOCAL DEV:
+#   cd luckycat-video/worker-video
+#   npm install
+#   npx wrangler dev
+#
+# =============================================================================
+
 name = "lucky-cat-video-stream"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
@@ -6,16 +37,17 @@ compatibility_date = "2024-01-01"
 NAKAMA_URL = "https://devel.luckycat.me"
 LUCKYCAT_API_URL = "https://api-devel.luckycat.me"
 
-
-
-
-# Secrets to configure via `wrangler secret put`:
+# Secrets (configure via `wrangler secret put <NAME>`):
 # CLOUDFLARE_ACCOUNT_ID
 # CLOUDFLARE_STREAM_API_TOKEN
 # CLOUDFLARE_STREAM_SIGNING_KEY_ID
 # CLOUDFLARE_STREAM_SIGNING_KEY_PEM
 # OPENROUTER_API_KEY
 
-[[routes]]
-pattern = "testvideo.luckycat.me"
-custom_domain = true
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
